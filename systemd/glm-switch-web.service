@@ -1,0 +1,14 @@
+[Unit]
+Description=GLM model switch web page (normal / Ablit)
+After=network-online.target
+
+[Service]
+User=@USER@
+WorkingDirectory=@WEBDIR@
+ExecStart=/usr/bin/python3 @WEBDIR@/glm-switch-web.py
+Restart=on-failure
+# a running switch must outlive a restart of this page
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

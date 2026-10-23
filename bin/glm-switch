@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# glm-switch: switch the GLM-5.3 cluster between the published weights and the Ablit weights.
+#   glm-switch status            which weights are serving, and whether the cluster is up
+#   glm-switch weights           which weights are complete on all three Sparks
+#   glm-switch normal|ablit      switch (refuses while requests are running; --force to switch anyway)
+# Flags: --force, --no-rollback
+# The choice is the ABLIT= line in the recipe's .env; the glm53 systemd service does the start.
+# A switch logs to ~/glm-switch.log and holds /tmp/glm-switch.lock (its pid in /tmp/glm-switch.pid).
+set -uo pipefail
+
+# This cluster's values (the recipe's folder, the workers' ssh targets, ...): config.env, see config.example.env
+CONF=${GLM_SWITCH_CONF:-$HOME/.config/glm-switch/config.env}
+[[ -f "$CONF" ]] || { echo "glm-switch: no config at $CONF (copy config.example.env there)" >&2; exit 2; }
+source "$CONF"
+REPO=${RECIPE_DIR:-$HOME/GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold}
+ENV=$REPO/.env
+API=${API_URL:-http://127.0.0.1:8888}
+read -ra WORKERS <<< "${WORKERS:?set WORKERS in $CONF}"
+NORMAL_DIR=models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold
+ABLIT_DIR=models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit
+HUB=.cache/huggingface/hub
+BOOT_BUDGET=900
+LOCK=/tmp/glm-switch.lock
+PIDFILE=/tmp/glm-switch.pid
+LOG=$HOME/glm-switch.log
+
+die() { echo "glm-switch: $*" >&2; exit 1; }
+root() { timeout 300 ${ROOT_CMD:-sudo -n} "$@"; }   # glm53's TimeoutStopSec is 4 min
+
+serving() {  # the weights the running head container loaded: normal, ablit or none
+  local cmd; cmd=$(docker inspect -f '{{join .Args " "}}' glm53-flash-tf 2>/dev/null) || { echo none; return; }
+  case "$cmd" in *"$ABLIT_DIR"*) echo ablit ;; *"$NORMAL_DIR"*) echo normal ;; *) echo unknown ;; esac
+}
+# config.sh's own reading of ABLIT (local.sh, then .env), so this always agrees with what a start will load
+recipe() { (cd "$REPO" && env -u ABLIT bash -c "${1:+export ABLIT=$1; }source scripts/config.sh >/dev/null 2>&1; echo \"\$ABLIT \$MODEL_REVISION\""); }
+configured() { [[ "$(recipe | cut -d' ' -f1)" == 1 ]] && echo ablit || echo normal; }
+up() { curl -sf -m 4 "$API/health" | grep -q '"ok": true'; }
+running() {  # requests running or waiting on the server (0 when it is down)
+  curl -s -m 4 "$API/metrics" 2>/dev/null |
+    awk '/^tensorfold:requests_(running|waiting)[ {]/ { s += $NF } END { print int(s) }'
+}
+
+set_mode() {  # $1 = normal|ablit: replace every ABLIT= line of .env (export/quoted forms too), keep the rest (HF_TOKEN)
+  local v=0; [[ $1 == ablit ]] && v=1
+  ( umask 077; { grep -Ev '^[[:space:]]*(export[[:space:]]+)?ABLIT=' "$ENV" 2>/dev/null; echo "ABLIT=$v"; } > "$ENV.tmp" ) &&
+    mv "$ENV.tmp" "$ENV" && chmod 600 "$ENV"
+  [[ "$(configured)" == "$1" ]] || die "ABLIT is set elsewhere (scripts/local.sh or the environment) and overrides .env; fix that first"
+}
+
+have_weights() {  # $1 = normal|ablit: the pinned revision complete on the head and on every worker
+  local d=$NORMAL_DIR v=0 rev w check
+  [[ $1 == ablit ]] && { d=$ABLIT_DIR; v=1; }
+  rev=$(recipe "$v" | cut -d' ' -f2)
+  [[ -n "$rev" ]] || { echo "could not read the pinned revision"; return 1; }
+  # the snapshot has config.json and no broken links, and no blob is still downloading
+  check="test -f $HUB/$d/snapshots/$rev/config.json && ! find -L $HUB/$d/snapshots/$rev -type l | grep -q . && ! ls $HUB/$d/blobs/*.incomplete >/dev/null 2>&1"
+  (cd "$HOME" && bash -c "$check") || { echo "the head's $1 weights ($rev) are not complete"; return 1; }
+  for w in "${WORKERS[@]}"; do
+    ssh -o BatchMode=yes -o ConnectTimeout=5 "$w" "$check" </dev/null || { echo "$w's $1 weights ($rev) are not complete"; return 1; }
+  done
+}
+
+service_failed() {  # the start died: systemd counts a restart, or waits to restart, or gave up
+  local sub nr
+  sub=$(systemctl show -p SubState --value glm53); nr=$(systemctl show -p NRestarts --value glm53)
+  [[ $sub == auto-restart || $sub == failed ]] || (( nr > NR0 ))
+}
+
+restart_and_wait() {
+  echo "$(date +%T) stopping the cluster..."
+  root systemctl stop glm53
+  NR0=$(systemctl show -p NRestarts --value glm53)
+  echo "$(date +%T) starting it (up to $((BOOT_BUDGET / 60)) min)..."
+  root systemctl start --no-block glm53
+  local t0=$SECONDS
+  while (( SECONDS - t0 < BOOT_BUDGET )); do
+    sleep 10
+    if up; then echo "$(date +%T) up after $((SECONDS - t0))s"; return 0; fi
+    if service_failed; then echo "$(date +%T) the start failed:"; journalctl -u glm53 -n 20 --no-pager --output=cat; return 1; fi
+    echo "  waiting... $((SECONDS - t0))s"
+  done
+  echo "not up after ${BOOT_BUDGET}s"; return 1
+}
+
+smoke() {
+  curl -s -m 120 "$API/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"GLM-5.3-Flash-EXL3","messages":[{"role":"user","content":"Reply with exactly: ready"}],"max_tokens":8,"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}' |
+    python3 -c 'import sys,json; print("test reply:", json.load(sys.stdin)["choices"][0]["message"]["content"].strip())' 2>/dev/null ||
+    { echo "test request FAILED"; return 1; }
+}
+
+status() {
+  echo "serving:    $(serving)"
+  echo "configured: $(configured)"
+  echo "service:    $(systemctl is-active glm53)"
+  if up; then echo "api:        up, $(running) request(s) running or waiting"; else echo "api:        down"; fi
+}
+
+cmd=${1:-status}; shift || true
+force=0; rollback=1
+for a in "$@"; do case $a in --force) force=1 ;; --no-rollback) rollback=0 ;; *) die "unknown flag $a" ;; esac; done
+
+case $cmd in
+  status) status ;;
+  weights) for m in normal ablit; do have_weights "$m" >/dev/null && echo "$m: ready" || echo "$m: missing"; done ;;
+  normal|ablit)
+    exec 9>>"$LOCK"; flock -n 9 || die "another switch is running"
+    trap '' HUP PIPE                 # a closed ssh session or a broken pipe must not stop a switch halfway
+    echo $$ > "$PIDFILE"; trap 'rm -f "$PIDFILE"' EXIT
+    exec > >(tee -p "$LOG") 2>&1     # -p: keep writing the log when the terminal is gone
+    echo "$(date '+%F %T') glm-switch $cmd $*"
+    if [[ "$(serving)" == "$cmd" ]] && up; then echo "already serving $cmd"; set_mode "$cmd"; exit 0; fi
+    pgrep -f scripts/prepare.sh >/dev/null && die "prepare.sh is running (a download or copy); try again when it ends"
+    have_weights "$cmd" || die "switch cancelled: get the weights first (ABLIT=$([[ $cmd == ablit ]] && echo 1 || echo 0) TP=3 scripts/prepare.sh)"
+    if [[ $cmd == ablit ]] && ! grep -q '^HF_TOKEN=hf_' "$ENV" 2>/dev/null; then die "no HF_TOKEN in $ENV"; fi
+    n=$(running); (( n == 0 || force )) || die "$n request(s) running or waiting; try again later or add --force"
+    prev=$(serving); [[ $prev == normal || $prev == ablit ]] || prev=$(configured)
+    echo "switching: $(serving) -> $cmd"
+    set_mode "$cmd"
+    if restart_and_wait && [[ "$(serving)" == "$cmd" ]] && smoke; then echo "$(date +%T) DONE: serving $cmd, took ${SECONDS}s"; exit 0; fi
+    if (( rollback )) && [[ "$prev" != "$cmd" ]]; then
+      echo "!! $cmd did not come up; going back to $prev"
+      set_mode "$prev"; restart_and_wait && smoke && echo "$(date +%T) ROLLED BACK: serving $prev, took ${SECONDS}s"
+    fi
+    exit 1 ;;
+  *) sed -n '2,9p' "$0"; exit 2 ;;
+esac
