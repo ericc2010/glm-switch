@@ -97,6 +97,7 @@
       <div class="stat"><div class="v" id="active">–</div><div class="k">requests running</div></div>
       <div class="stat"><div class="v" id="served">–</div><div class="k">requests since start</div></div>
       <div class="stat"><div class="v" id="pool">–</div><div class="k">memory pool free</div></div>
+      <div class="stat"><div class="v" id="cable">–</div><div class="k" id="cable-k">on the cables</div></div>
     </div>
     <div class="banner" id="stuck" hidden></div>
   </section>
@@ -111,7 +112,9 @@
     </div>
     <p class="note" id="unmatched" hidden></p>
     <p class="note">Waiting means no reply has been sent yet: the request is in its prompt (prefill), queued, or is a
-      non-streaming request that is still being answered; a very long prompt can take minutes. Gone means the client
+      non-streaming request that is still being answered; a very long prompt can take minutes. The cables between the
+      Sparks tell the difference: <em>prompt loading</em> means the prompt is being read (about 2.3 GB/s), <em>engine
+      stalled</em> means nothing has moved for 30 s with work held. Gone means the client
       already hung up but its request still holds a slot. <strong>Drop</strong> closes that client's connection and the
       server cancels its request within seconds; the others keep going. The client sees an error and may send it again.</p>
   </section>
@@ -268,6 +271,12 @@ function paint(s) {
   $("active").textContent = L ? `${L.requests_running} / ${L.max_at_once}` : "–";
   $("served").textContent = L ? num(L.requests_served) : "–";
   $("pool").textContent = L ? L.pool_free_pct + "%" : "–";
+  const G = L && L.progress;
+  const mb = L && L.cable_mb_s;
+  $("cable").textContent = mb == null ? "–" : mb >= 1000 ? (mb / 1000).toFixed(1) + " GB/s" : mb + " MB/s";
+  $("cable").className = "v " + (G && G.state === "stalled" ? "bad" : "");
+  $("cable-k").textContent = "on the cables" + (!G ? "" : G.state === "loading" ? " · a prompt is loading" : G.state === "decoding" ? " · answering"
+    : G.state === "stalled" ? ` · NOTHING MOVING for ${G.stalled_s} s` : " · quiet");
 
   $("nodes").innerHTML = (s.nodes || []).map(n => {
     const name = `<td><strong>${esc(n.name)}</strong><br><span class="muted">${esc(n.role)}</span></td>`;
@@ -285,9 +294,12 @@ function paint(s) {
   const C = s.connections || [];
   const STATES = { streaming: ["Streaming", "ok"], waiting: ["Waiting for reply", "warn"], gone: ["Client gone", "warn"], idle: ["Idle", "muted"] };
   $("conns").innerHTML = C.length ? C.map(c => {
-    const [label, cls] = STATES[c.state] || [c.state, ""];
+    let [label, cls] = STATES[c.state] || [c.state, ""];
+    if (c.note === "loading") label += " · prompt loading";
+    else if (c.note === "stalled") label += " · engine stalled";
+    else if (c.stuck) label += " — stuck?";
     return `<tr><td><strong>${esc(c.client)}</strong><br><span class="muted">${esc(c.peer)}</span></td>
-      <td class="${c.stuck ? "bad" : cls}">${label}${c.stuck ? " — stuck?" : ""}</td>
+      <td class="${c.stuck ? "bad" : cls}">${label}</td>
       <td>${c.state === "idle" ? "–" : dur(c.seconds)}</td><td>${num(c.bytes_sent)} B</td>
       <td class="act"><button class="small drop" data-peer="${esc(c.peer)}" ${s.switching ? "disabled" : ""}>Drop</button></td></tr>`;
   }).join("") : `<tr><td colspan="5" class="muted">No clients connected</td></tr>`;
@@ -295,8 +307,10 @@ function paint(s) {
   $("unmatched").hidden = !U;
   $("unmatched").textContent = `${U} request(s) running with no connection listed (the client hung up, or it was sent from the head itself). Drop all cannot reach it; if it never ends, restart the model.`;
   const stuck = C.filter(c => c.stuck);
-  $("stuck").hidden = !stuck.length;
-  if (stuck.length) $("stuck").textContent = stuck.map(c => `${c.client} has waited ${dur(c.seconds)} with no reply`).join(" · ")
+  $("stuck").hidden = !stuck.length && !(G && G.state === "stalled");
+  if (G && G.state === "stalled") $("stuck").textContent = `The engine has moved nothing over the cables for ${dur(G.stalled_s)} with `
+    + `${G.filling + G.decoding} stream(s) held: a real hang, not a long prompt. Drop the waiting request(s); if the count stays, restart the model.`;
+  else if (stuck.length) $("stuck").textContent = stuck.map(c => `${c.client} has waited ${dur(c.seconds)} with no reply`).join(" · ")
     + " — if that's not a very long prompt, Drop it under Requests.";
   $("b-dropall").disabled = s.switching || !C.length;
   $("b-restart").disabled = s.switching;  // not during a start or a hang: a hang is what it is for

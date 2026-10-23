@@ -55,6 +55,15 @@ label() {  # $1 = client ip: its name from CLIENTS ("ip=name ..." in the config)
 
 lock_held() { ( exec 9>>"$LOCK"; ! flock -n 9 ); }   # a switch or restart is running
 
+# The ring cables carry the engine's work between the Sparks as RDMA, which only the InfiniBand counters see (4-byte
+# units): a prompt being read moves ~2.3 GB/s on 3 Sparks, one reply ~0.5 GB/s, an idle or stuck engine ~0.
+cable_bytes() { cat /sys/class/infiniband/*/ports/1/counters/port_xmit_data 2>/dev/null | awk '{ s += $1 } END { if (NR) printf "%.0f", 4 * s }'; }
+cable_mb_s() {  # over $1 seconds; nothing without the counters
+  local a b; a=$(cable_bytes); [[ -n $a ]] || return 0
+  sleep "$1"; b=$(cable_bytes)
+  awk -v a="$a" -v b="$b" -v t="$1" 'BEGIN { printf "%d", (b - a) / t / 1e6 }'
+}
+
 conns() {  # one tab-separated line per client: peer, state, seconds since its request, bytes sent for it
   # waiting: received a request and sent at most the headers since (no reply yet: prefill, queued, or a non-streaming
   # reply). streaming: sent data in the last 3 s. gone: the client closed, the server has not yet (its request still
@@ -145,6 +154,8 @@ status() {
   echo "configured: $(configured)"
   echo "service:    $(systemctl is-active glm53)"
   if up; then echo "api:        up, $(running) request(s) running or waiting"; else echo "api:        down"; fi
+  local mb; mb=$(cable_mb_s 1)
+  [[ -n $mb ]] && echo "cables:     $mb MB/s over 1 s (idle 0, one reply ~500, a prompt loading ~2300)"
 }
 
 take_lock() {  # $* = the command line for the log: one switch or restart at a time, logged to $LOG
@@ -171,7 +182,7 @@ node_diag() {  # what one Spark shows: run there (through ssh for a worker); roo
 diag() {
   local d t w name
   t=$(date +%Y%m%d-%H%M%S); d=$(mktemp -d); name=diag-$t
-  trap 'rm -rf "$d"' EXIT
+  trap "rm -rf '$d'" EXIT            # expanded now: d is local and gone when the trap runs
   mkdir -p "$d/$name" "$DIAG_DIR"
   { status; echo; echo "== connections (peer, state, s since request, bytes sent)"; conns; } > "$d/$name/head-status.txt" 2>&1
   curl -s -m 5 "$API/metrics" > "$d/$name/metrics-0s.txt"; curl -s -m 5 "$API/health" > "$d/$name/health.json"
@@ -183,7 +194,9 @@ diag() {
       "ROOT_CMD='${ROOT_CMD:-}'; $(declare -f node_diag); node_diag" < /dev/null > "$d/$name/node-${w#*@}.txt" 2>&1 \
       || echo "FAILED: ssh $w ($?)" >> "$d/$name/node-${w#*@}.txt" &
   done
+  c0=$(cable_bytes)
   sleep 5; curl -s -m 5 "$API/metrics" > "$d/$name/metrics-5s.txt"   # two readings: is anything moving?
+  c1=$(cable_bytes); [[ -n $c0 && -n $c1 ]] && echo "cables: $(( (c1 - c0) / 5000000 )) MB/s over 5 s" >> "$d/$name/head-status.txt"
   wait
   tar -czf "$DIAG_DIR/$name.tar.gz" -C "$d" "$name" || die "could not write $DIAG_DIR/$name.tar.gz"
   ls -1t "$DIAG_DIR"/diag-*.tar.gz | tail -n +21 | xargs -r rm -f   # keep the last 20

@@ -68,6 +68,15 @@ came from the head itself). The **Unstick** card goes from least to most disrupt
 3. **Capture diagnostics** (any time, best while it's stuck): two metrics readings 5 s apart, the connections, the
    glm53 journal, and from every Spark the GPU, ring link counters, `dmesg` and the model log. The last 20 bundles are kept.
 
+**Is a long prompt loading, or is the engine stuck?** The server's own counters can't say: a prompt's cache rows are
+taken when it is admitted and nothing else moves until it is done. The ring cables can: the Sparks exchange the
+engine's work over them as RDMA, which the InfiniBand counters (`/sys/class/infiniband/*/ports/1/counters`) see.
+A prompt being read moves about 2.3 GB/s on 3 Sparks, one reply being written about 0.5 GB/s, an idle engine nothing.
+The page shows the rate under Live, labels waiting requests *prompt loading* or *engine stalled* (below
+`CABLE_PREFILL_MB_S`, default 1000, for 30 s with a prompt filling; or nothing moving with replies held), and
+`glm-switch status` prints a 1-second reading. A stall is a real hang: Drop the waiting request, and restart if the
+held count doesn't fall.
+
 The state of a connection comes from the kernel's TCP counters (`ss -i`): a request has begun when the last receive
 is newer than the last one seen, and the bytes sent since then say whether a reply is under way. The bytes sent before
 the current request are remembered in `/tmp/glm-switch-conns.state`. A very long prompt legitimately waits for minutes

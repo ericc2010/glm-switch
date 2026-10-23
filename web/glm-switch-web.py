@@ -12,6 +12,7 @@ telemetry in the background, so a page load never waits on ssh.
 Stdlib only. Port 8891 (GLM_SWITCH_PORT).
 """
 import fcntl
+import glob
 import json
 import os
 import re
@@ -30,6 +31,11 @@ PREP_LOG = os.path.join(HOME, "ablit-prepare.log")
 DIAG_DIR = os.path.join(HOME, "glm-diag")
 STUCK_S = 120  # a request waiting this long with no reply is flagged on the page
 HUNG_S = 900  # glm53 active this long with /health not answering: the server is up but not answering (not a start)
+# The ring cables carry the engine's work between the Sparks (RDMA, so the kernel's Ethernet counters miss it): a
+# prompt being read moves ~2.3 GB/s on 3 Sparks, one reply being written ~0.5 GB/s, an idle or stuck engine ~0.
+CABLE_GLOB = "/sys/class/infiniband/*/ports/1/counters/port_xmit_data"  # 4-byte units
+QUIET_MB_S = 50.0
+STALL_S = 30  # streams held but the cables below what their work moves, this long: the engine is not progressing
 
 
 def _config(path):
@@ -56,12 +62,14 @@ ABLIT_GB = 176  # the Ablit checkpoint on disk (du -sbL), checked 2026-10-22
 
 # the names this page may be reached by (a DNS-rebinding page would send its own); port stripped
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", *CONF.get("WEB_HOSTS", "").split()}
+PREFILL_MB_S = float(CONF.get("CABLE_PREFILL_MB_S", "1000"))  # below this with a prompt filling: it is not being read
 LOCK = "/tmp/glm-switch.lock"
 _child = {"proc": None}
 _lock = threading.Lock()
 _cache = {}
 _rate = {"t": None, "tokens": None, "tps": 0.0}
 _since = {"state": None, "t": None}
+_cable = {"t": None, "bytes": None, "slow_since": None}
 _wake = threading.Event()  # set when the cached state is stale: the sampler re-reads at once
 _diag = {"running": False, "file": None, "error": None, "finished": None}
 
@@ -167,6 +175,33 @@ def connections():
     return sorted(out, key=lambda c: (order.get(c["state"], 4), -c["seconds"]))
 
 
+def cable_sample(now):
+    """MB/s sent on the ring cables since the last sample (None without counters, or on the first reading)."""
+    try:
+        b = 4 * sum(int(open(f).read()) for f in glob.glob(CABLE_GLOB)) if glob.glob(CABLE_GLOB) else None
+    except (OSError, ValueError):
+        b = None
+    prev_b, prev_t = _cable["bytes"], _cable["t"]
+    _cable.update(bytes=b, t=now)
+    if b is None or prev_b is None or b < prev_b or now - prev_t <= 0:
+        return None
+    return (b - prev_b) / (now - prev_t) / 1e6
+
+
+def engine_progress(filling, decoding, mb_s, now):
+    """What the cables say the engine is doing: loading (a prompt is being read), decoding, quiet, or stalled (streams
+    held but the cables below what their work moves, for STALL_S). None without cable counters."""
+    if mb_s is None:
+        _cable["slow_since"] = None
+        return None
+    need = PREFILL_MB_S if filling else QUIET_MB_S if decoding else 0.0
+    slow = bool(filling or decoding) and mb_s < need
+    _cable["slow_since"] = (_cable["slow_since"] or now) if slow else None
+    stalled_s = int(now - _cable["slow_since"]) if slow else 0
+    state = ("stalled" if stalled_s >= STALL_S else "loading" if filling else "decoding" if decoding else "quiet")
+    return {"state": state, "mb_s": round(mb_s), "stalled_s": stalled_s, "filling": filling, "decoding": decoding}
+
+
 def systemd(unit, prop):
     return sh(["systemctl", "show", "-p", prop, "--value", unit])[1]
 
@@ -227,6 +262,12 @@ def sample_forever():
             streams = (h or {}).get("streams", {})
             conns = connections() if svc == "active" else []
             held = (h.get("requests_running", 0) + h.get("requests_waiting", 0)) if h and h.get("ok") else 0
+            mb_s = cable_sample(now)
+            prog = engine_progress(streams.get("filling", 0), streams.get("decoding", 0), mb_s, now) if h and h.get("ok") else None
+            for c in conns:  # the cables say whether a waiting request's prompt is being read, or nothing moves
+                if c["state"] == "waiting" and prog and prog["state"] in ("stalled", "loading"):
+                    c["note"] = prog["state"]
+                    c["stuck"] = prog["state"] == "stalled"
             _cache.update({
                 "state": state, "state_seconds": secs, "service": svc,
                 "serving": st.get("serving", "unknown"), "configured": st.get("configured", "unknown"),
@@ -240,6 +281,8 @@ def sample_forever():
                     "requests_served": h.get("requests_total", 0),
                     "tokens_generated": h.get("completion_tokens_total", 0),
                     "pool_free_pct": round(100 * h.get("pool_free_tokens", 0) / max(1, h.get("pool_tokens", 1))),
+                    "cable_mb_s": None if mb_s is None else round(mb_s),
+                    "progress": prog,
                 },
                 "nodes": nodes, "download": downloads(), "updated": int(now), "error": None,
                 "connections": conns, "stuck_after_s": STUCK_S,
