@@ -29,6 +29,7 @@ PIDFILE = "/tmp/glm-switch.pid"
 PREP_LOG = os.path.join(HOME, "ablit-prepare.log")
 DIAG_DIR = os.path.join(HOME, "glm-diag")
 STUCK_S = 120  # a request waiting this long with no reply is flagged on the page
+HUNG_S = 900  # glm53 active this long with /health not answering: the server is up but not answering (not a start)
 
 
 def _config(path):
@@ -152,21 +153,31 @@ def downloads():
 
 
 def connections():
-    """The model server's clients, from `glm-switch conns`: who, streaming / waiting / idle, seconds since the request."""
+    """The model server's clients, from `glm-switch conns`: who, waiting / streaming / gone / idle, seconds since
+    the request, bytes sent for it. Read even when /health hangs: the Drop buttons matter most then."""
     names = dict(e.split("=", 1) for e in CONF.get("CLIENTS", "").split() if "=" in e)
     out = []
     for line in sh([TOOL, "conns", "--tsv"], 20)[1].splitlines():
         f = line.split("\t")
-        if len(f) == 4 and f[2].isdigit() and f[3].isdigit():
+        if len(f) == 4 and f[2].isdigit() and f[3].lstrip("-").isdigit():
             ip = f[0].rsplit(":", 1)[0]
             out.append({"peer": f[0], "client": names.get(ip, ip), "state": f[1], "seconds": int(f[2]),
-                        "bytes_sent": int(f[3]), "stuck": f[1] == "waiting" and int(f[2]) >= STUCK_S})
-    order = {"waiting": 0, "streaming": 1, "idle": 2}
-    return sorted(out, key=lambda c: (order.get(c["state"], 3), -c["seconds"]))
+                        "bytes_sent": max(0, int(f[3])), "stuck": f[1] == "waiting" and int(f[2]) >= STUCK_S})
+    order = {"waiting": 0, "gone": 1, "streaming": 2, "idle": 3}
+    return sorted(out, key=lambda c: (order.get(c["state"], 4), -c["seconds"]))
 
 
 def systemd(unit, prop):
     return sh(["systemctl", "show", "-p", prop, "--value", unit])[1]
+
+
+def _service_age():
+    """Seconds since glm53 last changed state (its start, when it is active)."""
+    try:
+        mono = int(systemd("glm53", "StateChangeTimestampMonotonic")) / 1e6
+        return time.monotonic() - mono if mono else 0.0
+    except ValueError:
+        return 0.0
 
 
 def sample_forever():
@@ -196,17 +207,15 @@ def sample_forever():
                 state = "up"
             elif sub == "auto-restart" or svc == "failed":
                 state = "failed"
+            elif svc == "active" and _service_age() > HUNG_S:
+                state = "unresponsive"  # long past any start: the process is there, the API is not
             elif svc in ("activating", "active", "reloading"):
                 state = "starting"
             else:
                 state = "down"
             if state != _since["state"]:
                 if _since["state"] is None:  # first reading: count from systemd's last state change
-                    try:
-                        mono = int(systemd("glm53", "StateChangeTimestampMonotonic")) / 1e6
-                        _since["t"] = now - (time.monotonic() - mono) if mono else now
-                    except ValueError:
-                        _since["t"] = now
+                    _since["t"] = now - _service_age()
                 else:
                     _since["t"] = now
                 _since["state"] = state
@@ -216,6 +225,8 @@ def sample_forever():
                     nodes = list(ex.map(node_info, NODES))
                 nodes_t = now
             streams = (h or {}).get("streams", {})
+            conns = connections() if svc == "active" else []
+            held = (h.get("requests_running", 0) + h.get("requests_waiting", 0)) if h and h.get("ok") else 0
             _cache.update({
                 "state": state, "state_seconds": secs, "service": svc,
                 "serving": st.get("serving", "unknown"), "configured": st.get("configured", "unknown"),
@@ -223,6 +234,7 @@ def sample_forever():
                 "live": None if not (h and h.get("ok")) else {
                     "tokens_per_s": round(_rate["tps"], 1),
                     "requests_running": h.get("requests_running", 0),
+                    "requests_waiting": h.get("requests_waiting", 0),
                     "decoding": streams.get("decoding", 0), "prefilling": streams.get("prefilling", 0),
                     "max_at_once": streams.get("max"),
                     "requests_served": h.get("requests_total", 0),
@@ -230,7 +242,9 @@ def sample_forever():
                     "pool_free_pct": round(100 * h.get("pool_free_tokens", 0) / max(1, h.get("pool_tokens", 1))),
                 },
                 "nodes": nodes, "download": downloads(), "updated": int(now), "error": None,
-                "connections": connections() if h and h.get("ok") else [], "stuck_after_s": STUCK_S,
+                "connections": conns, "stuck_after_s": STUCK_S,
+                # requests the server holds beyond the connections that could hold one: client gone, or sent from the head
+                "unmatched_requests": max(0, held - sum(1 for c in conns if c["state"] != "idle")),
             })
         except Exception as e:  # keep sampling; show the error instead of a stale page
             _cache["error"] = str(e)
@@ -260,7 +274,11 @@ def status():
     m = re.search(r"(DONE|ROLLED BACK|RESTARTED): serving (\w+), took (\d+)s", out.get("log", ""))
     out["last_switch"] = {"result": m.group(1).lower(), "serving": m.group(2), "seconds": int(m.group(3)),
                           "finished": os.path.getmtime(LOG)} if m and not out["switching"] else None
-    a = re.match(r"\S+ \S+ glm-switch (\w+)", out.get("log", ""))
+    try:  # the log's first line names the action (normal, ablit, restart); the tail above may have lost it
+        with open(LOG) as f:
+            a = re.match(r"\S+ \S+ glm-switch (\w+)", f.readline())
+    except OSError:
+        a = None
     out["action"] = a.group(1) if a else None
     out["diag"] = dict(_diag)
     return out
@@ -324,13 +342,14 @@ class Handler(BaseHTTPRequestHandler):
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
         return host in ALLOWED_HOSTS
 
-    def _send(self, code, body, ctype="application/json"):
+    def _send(self, code, body, ctype="application/json", public=False):
         data = body.encode() if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")  # read-only status for dashboards elsewhere
+        if public:
+            self.send_header("Access-Control-Allow-Origin", "*")  # read-only status for dashboards elsewhere
         self.end_headers()
         self.wfile.write(data)
 
@@ -341,7 +360,7 @@ class Handler(BaseHTTPRequestHandler):
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "glm-switch-web.html"), "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
         elif self.path == "/api/status":
-            self._send(200, json.dumps(status()))
+            self._send(200, json.dumps(status()), public=True)
         elif re.fullmatch(r"/diag/diag-\d{8}-\d{6}\.tar\.gz", self.path):
             try:
                 with open(os.path.join(DIAG_DIR, self.path.rsplit("/", 1)[1]), "rb") as f:

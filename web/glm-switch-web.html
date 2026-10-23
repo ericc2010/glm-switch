@@ -29,7 +29,7 @@
   .pill { font-weight: 700; font-size: 18px; padding: 6px 14px; border-radius: 999px; }
   .pill.up { color: var(--ok); background: var(--ok-bg); }
   .pill.starting, .pill.switching { color: var(--warn); background: var(--warn-bg); }
-  .pill.down, .pill.failed { color: var(--bad); background: var(--bad-bg); }
+  .pill.down, .pill.failed, .pill.unresponsive { color: var(--bad); background: var(--bad-bg); }
   .hero-text { font-size: 17px; font-weight: 600; }
   .hero-sub { color: var(--muted); font-size: 14px; }
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
@@ -109,9 +109,11 @@
         <tbody id="conns"></tbody>
       </table>
     </div>
-    <p class="note">Waiting means the request is in its prompt (prefill) or queued, with no reply yet; a very long prompt
-      can take minutes. <strong>Drop</strong> closes that client's connection and the server cancels its request within
-      seconds; the others keep going. The client sees an error and may send it again.</p>
+    <p class="note" id="unmatched" hidden></p>
+    <p class="note">Waiting means no reply has been sent yet: the request is in its prompt (prefill), queued, or is a
+      non-streaming request that is still being answered; a very long prompt can take minutes. Gone means the client
+      already hung up but its request still holds a slot. <strong>Drop</strong> closes that client's connection and the
+      server cancels its request within seconds; the others keep going. The client sees an error and may send it again.</p>
   </section>
 
   <section class="card">
@@ -121,6 +123,7 @@
       <button id="b-restart" class="danger" onclick="restart()">Restart model</button>
       <button id="b-diag" onclick="diag()">Capture diagnostics</button>
     </div>
+    <p class="note" id="unstick-msg" hidden></p>
     <p class="note" id="diag-note" hidden></p>
     <p class="note">Try them in this order. <strong>Drop all</strong> frees every slot in seconds without reloading the
       model. If a dropped request still counts as running after about 30 s, the server is stuck below the point where
@@ -183,7 +186,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const NAMES = { normal: "Normal", ablit: "Ablit", none: "No model", unknown: "Unknown" };
-const STATE = { up: "Up", starting: "Starting", switching: "Switching", down: "Down", failed: "Failed" };
+const STATE = { up: "Up", starting: "Starting", switching: "Switching", down: "Down", failed: "Failed", unresponsive: "Not answering" };
 let busy = false, timer = null;
 const TYPICAL = { restart: 140, switch: 210 };  // a restart usually takes 2–2.5 min, a switch 3–4 min
 let TYPICAL_S = TYPICAL.switch, lastState = null;
@@ -235,9 +238,10 @@ function paint(s) {
     switching: restarting ? `Restarting the ${model} model` : `Switching to ${NAMES[s.configured] || s.configured}`,
     down: "The model is stopped",
     failed: "The model failed to start; it retries every minute (see the last switch below, or journalctl -u glm53)",
+    unresponsive: "The model process is running but its API is not answering: try Drop all, then Restart model",
   }[s.state];
   $("hero").textContent = hero;
-  $("hero-sub").textContent = (s.state === "up" ? "Answering for " : s.state === "starting" ? "Loading for " : "For ")
+  $("hero-sub").textContent = (s.state === "up" ? "Answering for " : s.state === "starting" ? "Loading for " : s.state === "unresponsive" ? "Not answering for " : "For ")
     + dur(s.state_seconds) + (s.state === "starting" ? " (usually 2–6 min)" : "") + (s.error ? " · status error: " + s.error : "");
 
   if (s.switching && s.switch_started) {
@@ -279,20 +283,23 @@ function paint(s) {
   }).join("");
 
   const C = s.connections || [];
-  const STATES = { streaming: ["Streaming", "ok"], waiting: ["Waiting for reply", "warn"], idle: ["Idle", "muted"] };
+  const STATES = { streaming: ["Streaming", "ok"], waiting: ["Waiting for reply", "warn"], gone: ["Client gone", "warn"], idle: ["Idle", "muted"] };
   $("conns").innerHTML = C.length ? C.map(c => {
     const [label, cls] = STATES[c.state] || [c.state, ""];
     return `<tr><td><strong>${esc(c.client)}</strong><br><span class="muted">${esc(c.peer)}</span></td>
       <td class="${c.stuck ? "bad" : cls}">${label}${c.stuck ? " — stuck?" : ""}</td>
       <td>${c.state === "idle" ? "–" : dur(c.seconds)}</td><td>${num(c.bytes_sent)} B</td>
-      <td class="act"><button class="small" ${busy ? "disabled" : ""} onclick="dropPeer('${esc(c.peer)}')">Drop</button></td></tr>`;
+      <td class="act"><button class="small drop" data-peer="${esc(c.peer)}" ${s.switching ? "disabled" : ""}>Drop</button></td></tr>`;
   }).join("") : `<tr><td colspan="5" class="muted">No clients connected</td></tr>`;
+  const U = s.unmatched_requests || 0;
+  $("unmatched").hidden = !U;
+  $("unmatched").textContent = `${U} request(s) running with no connection listed (the client hung up, or it was sent from the head itself). Drop all cannot reach it; if it never ends, restart the model.`;
   const stuck = C.filter(c => c.stuck);
   $("stuck").hidden = !stuck.length;
   if (stuck.length) $("stuck").textContent = stuck.map(c => `${c.client} has waited ${dur(c.seconds)} with no reply`).join(" · ")
     + " — if that's not a very long prompt, Drop it under Requests.";
-  $("b-dropall").disabled = busy || !C.length;
-  $("b-restart").disabled = busy;
+  $("b-dropall").disabled = s.switching || !C.length;
+  $("b-restart").disabled = s.switching;  // not during a start or a hang: a hang is what it is for
   const D = s.diag || {};
   $("b-diag").disabled = !!D.running;
   $("b-diag").textContent = D.running ? "Collecting… (about 30 s)" : "Capture diagnostics";
@@ -335,26 +342,39 @@ async function post(path, body) {
   return r.json();
 }
 
+function said(msg) {  // the last Unstick result, under its buttons
+  $("unstick-msg").hidden = false;
+  $("unstick-msg").textContent = new Date().toLocaleTimeString() + " · " + msg;
+}
+
 async function dropPeer(peer) {
   const c = (lastState?.connections || []).find(x => x.peer === peer);
   const n = (lastState?.connections || []).length;
   if (!confirm(peer === "all" ? `Drop all ${n} connection(s)? Every running request is cancelled; the clients see an error.`
       : `Drop ${c ? c.client + " (" + peer + ")" : peer}? Its request is cancelled; the client sees an error.`)) return;
   const j = await post("/api/drop", { peer });
+  said((j.ok ? "" : "Drop failed: ") + j.message);
   if (!j.ok) alert(j.message);
   refresh();
 }
+$("conns").addEventListener("click", e => { const b = e.target.closest("button.drop"); if (b) dropPeer(b.dataset.peer); });
 
 async function restart() {
-  const n = lastState?.live?.requests_running || 0;
-  if (!confirm(`Restart the model? It stops for about 2–3 minutes` + (n ? ` and ${n} running request(s) are cut off.` : "."))) return;
-  const j = await post("/api/restart", { force: true });  // the confirm named the requests it cuts off
+  let n = 0;
+  try {  // a fresh count: the page's can be 5 s old
+    const L = (await (await fetch("/api/status")).json()).live;
+    n = L ? (L.requests_running || 0) + (L.requests_waiting || 0) : 0;
+  } catch {}
+  if (!confirm(`Restart the model? It stops for about 2–3 minutes` + (n ? ` and ${n} request(s) running or queued are cut off.` : "."))) return;
+  const j = await post("/api/restart", { force: n > 0 });  // the confirm named what it cuts off; more since then and it refuses
+  said(j.message);
   if (!j.ok || j.message !== "started") alert(j.message);
   busy = true; refresh();
 }
 
 async function diag() {
   const j = await post("/api/diag", {});
+  said(j.ok ? "Collecting diagnostics…" : j.message);
   if (!j.ok) alert(j.message);
   refresh();
 }

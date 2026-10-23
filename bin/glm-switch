@@ -7,7 +7,7 @@
 #   glm-switch conns [--tsv]     the clients connected to the model server: streaming, waiting for a reply, or idle
 #   glm-switch drop PEER|all     close a client's connection (ip:port from conns): the server cancels its request
 #   glm-switch diag              save a diagnostics bundle (metrics, connections, logs of every Spark) in ~/glm-diag
-# Flags: --force, --no-rollback
+# Flags: --force, --no-rollback, --tsv
 # The choice is the ABLIT= line in the recipe's .env; the glm53 systemd service does the start.
 # A switch logs to ~/glm-switch.log and holds /tmp/glm-switch.lock (its pid in /tmp/glm-switch.pid).
 set -uo pipefail
@@ -22,6 +22,7 @@ API=${API_URL:-http://127.0.0.1:8888}
 API_PORT=${API##*:}; API_PORT=${API_PORT%%/*}
 DIAG_DIR=$HOME/glm-diag
 STREAMING_MS=3000                    # a connection sent data this recently: its reply is streaming
+CONN_STATE=/tmp/glm-switch-conns.state   # per client connection: when its request began, the bytes sent before it
 read -ra WORKERS <<< "${WORKERS:?set WORKERS in $CONF}"
 NORMAL_DIR=models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold
 ABLIT_DIR=models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit
@@ -48,25 +49,46 @@ running() {  # requests running or waiting on the server (0 when it is down)
 }
 
 label() {  # $1 = client ip: its name from CLIENTS ("ip=name ..." in the config), else the ip
-  local e; for e in ${CLIENTS:-}; do [[ ${e%%=*} == "$1" ]] && { echo "${e#*=}"; return; }; done; echo "$1"
+  local e entries; read -ra entries <<< "${CLIENTS:-}"
+  for e in "${entries[@]}"; do [[ ${e%%=*} == "$1" ]] && { echo "${e#*=}"; return; }; done; echo "$1"
 }
 
-conns() {  # one tab-separated line per client: peer, state (streaming|waiting|idle), seconds since its request, bytes sent
-  # The server says how many requests it holds; the connections that are not streaming and sent most recently are
-  # those still waiting for a reply (in prefill or queued), the rest are idle keep-alives.
-  local raw held streaming
-  raw=$(ss -tnoiH state established "( sport = :$API_PORT )" | awk '
-    /^[^ \t]/ { peer = $4; next }
-    { snd = rcv = sent = 0
+lock_held() { ( exec 9>>"$LOCK"; ! flock -n 9 ); }   # a switch or restart is running
+
+conns() {  # one tab-separated line per client: peer, state, seconds since its request, bytes sent for it
+  # waiting: received a request and sent at most the headers since (no reply yet: prefill, queued, or a non-streaming
+  # reply). streaming: sent data in the last 3 s. gone: the client closed, the server has not yet (its request still
+  # holds a slot until the server notices). idle: a kept connection between requests. The bytes sent for the current
+  # request need the bytes sent before it on the same connection: kept in $CONN_STATE between calls.
+  local now raw
+  now=$(date +%s%3N)
+  raw=$( { ss -tnoiH state established "( sport = :$API_PORT )" | sed 's/^/E /'
+           ss -tnoiH state close-wait "( sport = :$API_PORT )" | sed 's/^/C /'; } | awk '
+    /^[EC] [^ \t]/ { tcp = $1; peer = $5; next }
+    { snd = rcv = sent = rcvd = 0
       for (i = 1; i <= NF; i++) { split($i, kv, ":")
-        if (kv[1] == "lastsnd") snd = kv[2]; else if (kv[1] == "lastrcv") rcv = kv[2]; else if (kv[1] == "bytes_sent") sent = kv[2] }
-      print peer "\t" snd "\t" rcv "\t" sent }')
-  [[ -n $raw ]] || return 0
-  held=$(running)
-  streaming=$(awk -F'\t' -v s=$STREAMING_MS '$2 < s' <<< "$raw" | grep -c .)
-  sort -t$'\t' -k3,3n <<< "$raw" | awk -F'\t' -v s=$STREAMING_MS -v w=$(( held > streaming ? held - streaming : 0 )) '
-    { state = $2 < s ? "streaming" : (w-- > 0 ? "waiting" : "idle")
-      printf "%s\t%s\t%d\t%s\n", $1, state, $3 / 1000, $4 }'
+        if (kv[1] == "lastsnd") snd = kv[2]; else if (kv[1] == "lastrcv") rcv = kv[2]
+        else if (kv[1] == "bytes_sent") sent = kv[2]; else if (kv[1] == "bytes_received") rcvd = kv[2] }
+      print tcp "\t" peer "\t" snd "\t" rcv "\t" sent "\t" rcvd }')
+  [[ -n $raw ]] || { : > "$CONN_STATE"; return 0; }
+  awk -F'\t' -v now="$now" -v s=$STREAMING_MS -v statefile="$CONN_STATE" '
+    BEGIN { while ((getline l < statefile) > 0) { split(l, f, "\t"); began[f[1]] = f[2]; base[f[1]] = f[3]; last[f[1]] = f[4] }
+            close(statefile) }
+    { tcp = $1; peer = $2; snd = $3; rcv = $4; sent = $5; rcvd = $6
+      b = now - rcv                                            # when its request arrived (ms since the epoch)
+      if (peer in began && b - began[peer] < 2000 && began[peer] - b < 2000) base0 = base[peer]   # the same request
+      else if (peer in last) base0 = last[peer]                # a new request on a kept connection
+      else base0 = 0                                           # a new connection
+      since = sent - base0
+      if (tcp == "C") st = "gone"
+      else if (rcvd == 0) st = "idle"                          # connected, nothing asked yet
+      else if (since <= 500) st = "waiting"
+      else if (snd < s) st = "streaming"
+      else st = "idle"
+      printf "%s\t%s\t%d\t%d\n", peer, st, rcv / 1000, since
+      printf "%s\t%d\t%d\t%d\n", peer, b, base0, sent > (statefile ".tmp") }
+    END { close(statefile ".tmp") }' <<< "$raw"
+  mv -f "$CONN_STATE.tmp" "$CONN_STATE" 2>/dev/null
 }
 
 set_mode() {  # $1 = normal|ablit: replace every ABLIT= line of .env (export/quoted forms too), keep the rest (HF_TOKEN)
@@ -136,19 +158,20 @@ take_lock() {  # $* = the command line for the log: one switch or restart at a t
 node_diag() {  # what one Spark shows: run there (through ssh for a worker); root for dmesg
   local i
   echo "== $(hostname) $(date '+%F %T')"; uptime; free -g
-  echo "== gpu"; nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,clocks.sm,power.draw --format=csv
-  echo "== containers"; docker ps -a --filter name=glm53 --format '{{.Names}} {{.Status}}'
+  echo "== gpu"; timeout 30 nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,clocks.sm,power.draw --format=csv || echo "FAILED: nvidia-smi ($?)"
+  echo "== containers"; timeout 30 docker ps -a --filter name=glm53 --format '{{.Names}} {{.Status}}' || echo "FAILED: docker ps ($?)"
   echo "== ring links"
   for i in enp1s0f0np0 enp1s0f1np1 enP2p1s0f0np0 enP2p1s0f1np1; do
     ip -s -o link show "$i" 2>/dev/null; ethtool -S "$i" 2>/dev/null | grep -iE 'err|drop|discard|timeout' | grep -vE ': 0$' | sed "s/^/  $i/"
   done
   echo "== dmesg (last 150)"; timeout 60 ${ROOT_CMD:-sudo -n} dmesg -T 2>&1 | tail -150
-  echo "== model log (last 400)"; docker logs --tail 400 -t glm53-flash-tf 2>&1
+  echo "== model log (last 400)"; timeout 60 docker logs --tail 400 -t glm53-flash-tf 2>&1 || echo "FAILED: docker logs ($?)"
 }
 
 diag() {
   local d t w name
   t=$(date +%Y%m%d-%H%M%S); d=$(mktemp -d); name=diag-$t
+  trap 'rm -rf "$d"' EXIT
   mkdir -p "$d/$name" "$DIAG_DIR"
   { status; echo; echo "== connections (peer, state, s since request, bytes sent)"; conns; } > "$d/$name/head-status.txt" 2>&1
   curl -s -m 5 "$API/metrics" > "$d/$name/metrics-0s.txt"; curl -s -m 5 "$API/health" > "$d/$name/health.json"
@@ -156,12 +179,13 @@ diag() {
   journalctl -u glm53 -n 300 --no-pager > "$d/$name/glm53-journal.txt" 2>&1
   node_diag > "$d/$name/node-head.txt" 2>&1 &
   for w in "${WORKERS[@]}"; do
-    ssh -o BatchMode=yes -o ConnectTimeout=5 "$w" "ROOT_CMD='$ROOT_CMD'; $(declare -f node_diag); node_diag" \
-      < /dev/null > "$d/$name/node-${w#*@}.txt" 2>&1 &
+    timeout 150 ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 "$w" \
+      "ROOT_CMD='${ROOT_CMD:-}'; $(declare -f node_diag); node_diag" < /dev/null > "$d/$name/node-${w#*@}.txt" 2>&1 \
+      || echo "FAILED: ssh $w ($?)" >> "$d/$name/node-${w#*@}.txt" &
   done
   sleep 5; curl -s -m 5 "$API/metrics" > "$d/$name/metrics-5s.txt"   # two readings: is anything moving?
   wait
-  tar -czf "$DIAG_DIR/$name.tar.gz" -C "$d" "$name" && rm -rf "$d"
+  tar -czf "$DIAG_DIR/$name.tar.gz" -C "$d" "$name" || die "could not write $DIAG_DIR/$name.tar.gz"
   ls -1t "$DIAG_DIR"/diag-*.tar.gz | tail -n +21 | xargs -r rm -f   # keep the last 20
   echo "$DIAG_DIR/$name.tar.gz"
 }
@@ -177,11 +201,15 @@ case $cmd in
   conns)
     if (( tsv )); then conns; exit; fi
     printf '%-24s %-22s %-10s %8s %10s\n' CLIENT PEER STATE FOR SENT
-    conns | while IFS=$'\t' read -r p st age sent; do
-      printf '%-24s %-22s %-10s %7ss %10s\n' "$(label "${p%:*}")" "$p" "$st" "$age" "$sent"; done ;;
+    rows=$(conns); n=0
+    while IFS=$'\t' read -r p st age sent; do
+      [[ -n $p ]] || continue; [[ $st == idle ]] || n=$((n + 1))
+      printf '%-24s %-22s %-10s %7ss %10s\n' "$(label "${p%:*}")" "$p" "$st" "$age" "$sent"; done <<< "$rows"
+    held=$(running); (( held > n )) && echo "$((held - n)) request(s) running with no connection listed (client gone, or sent from the head)" ;;
   drop)
     [[ -n $peer ]] || die "drop what? a peer from 'glm-switch conns' (ip:port), or all"
-    if [[ $peer == all ]]; then filter="( sport = :$API_PORT )"
+    lock_held && die "a switch or restart is running; its test request must not be dropped"
+    if [[ $peer == all ]]; then filter="( sport = :$API_PORT and not dst 127.0.0.1 )"   # not this script's own requests
     else
       [[ $peer =~ ^[0-9.]+:[0-9]+$ ]] || die "not an ip:port: $peer"
       conns | cut -f1 | grep -qxF "$peer" || die "no client connection $peer"
@@ -190,14 +218,18 @@ case $cmd in
     n=$(conns | grep -c .)
     root ss -K state established "$filter" >/dev/null 2>&1   # the server sees the close and cancels the request
     sleep 1
-    if [[ $peer == all ]]; then echo "dropped $n connection(s); $(conns | grep -c .) left"
+    if [[ $peer == all ]]; then
+      left=$(conns | grep -c .); (( n == 0 || left < n )) || die "nothing was dropped ($n connection(s) still there): is $ROOT_CMD working?"
+      echo "dropped $((n - left)) of $n connection(s)"
     elif conns | cut -f1 | grep -qxF "$peer"; then die "$peer is still connected"
     else echo "dropped $peer ($(label "${peer%:*}"))"; fi ;;
   diag) diag ;;
   restart)
     n=$(running); (( n == 0 || force )) || die "$n request(s) running or waiting; try again later or add --force"
-    take_lock restart "$@"             # after the check: a refusal leaves the last switch's log alone
     now=$(serving)
+    if [[ $now == normal || $now == ablit ]] && [[ "$(configured)" != "$now" ]]; then
+      die "the config says $(configured) but $now is serving: a restart would switch; use glm-switch $now"; fi
+    take_lock restart "$@"             # after the checks: a refusal leaves the last switch's log alone
     if restart_and_wait && smoke; then echo "$(date +%T) RESTARTED: serving $(serving), took ${SECONDS}s"; exit 0; fi
     echo "$(date +%T) the restart did not bring $now back up"; exit 1 ;;
   normal|ablit)

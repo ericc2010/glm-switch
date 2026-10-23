@@ -50,20 +50,28 @@ glm-switch diag              # save metrics, connections and every Spark's logs 
 
 ## When a request is stuck
 
-The page's **Requests** card lists every client connection. *Waiting for reply* means the request is in its prompt
-(prefill) or queued; one waiting over 2 minutes is flagged. The **Unstick** card goes from least to most disruptive:
+The page's **Requests** card lists every client connection. *Waiting for reply* means nothing but the HTTP headers has
+been sent back yet: the request is in its prompt (prefill), queued, or a non-streaming request still being answered;
+one waiting over 2 minutes is flagged. *Client gone* means the client hung up but the server has not noticed yet.
+A count of requests the server holds beyond the listed connections is shown too (the client is gone, or the request
+came from the head itself). The **Unstick** card goes from least to most disruptive:
 
 1. **Drop** (one request) or **Drop all**: closes the connection(s) from the head (`ss -K`, as root). TensorFold checks
    between prompt chunks and decode rounds whether the client is still there, so it cancels the request within a few
-   seconds and frees the slot; other requests keep going. The client sees a connection error and may retry.
+   seconds and frees the slot; other requests keep going. The client sees a connection error and may retry. Drop all
+   leaves connections from the head itself alone, and both refuse while a switch or restart runs (its test request).
 2. **Restart model**: if a dropped request still counts as running after about 30 s, the server is stuck somewhere it
    doesn't check for cancels (a collective between the Sparks, for example). This restarts glm53 on the same weights and
-   sends a test question, like a switch without the change.
+   sends a test question, like a switch without the change; it refuses if the config names other weights than those
+   serving (that would be a switch: use `glm-switch normal|ablit`). When the process is up but its API has not
+   answered for 15 minutes past its start, the page says *Not answering* and this button is the remedy.
 3. **Capture diagnostics** (any time, best while it's stuck): two metrics readings 5 s apart, the connections, the
    glm53 journal, and from every Spark the GPU, ring link counters, `dmesg` and the model log. The last 20 bundles are kept.
 
-A waiting request is inferred: the server's running count minus the connections streaming a reply. A very long prompt
-also waits for minutes (about 2.5k prompt tokens/s on 3 Sparks, less while others decode).
+The state of a connection comes from the kernel's TCP counters (`ss -i`): a request has begun when the last receive
+is newer than the last one seen, and the bytes sent since then say whether a reply is under way. The bytes sent before
+the current request are remembered in `/tmp/glm-switch-conns.state`. A very long prompt legitimately waits for minutes
+(about 2.5k prompt tokens/s on 3 Sparks, less while others decode).
 
 **For other tools:** `GET /api/status` returns everything as JSON. `state` is one of `up`, `starting`, `switching`,
 `down` or `failed`.
