@@ -10,8 +10,8 @@ Both weights serve under the same model name, so clients (Atlas, Hermes, ...) ne
 
 | Path | What it does |
 |---|---|
-| `bin/glm-switch` | The command: `status`, `weights`, `normal`, `ablit` |
-| `web/glm-switch-web.py` + `.html` | The web page (port 8891): status, live numbers, every Spark, downloads, switch buttons, a timer |
+| `bin/glm-switch` | The command: `status`, `weights`, `normal`, `ablit`, `restart`, `conns`, `drop`, `diag` |
+| `web/glm-switch-web.py` + `.html` | The web page (port 8891): status, live numbers, every Spark, client connections, downloads, switch and unstick buttons, a timer |
 | `systemd/glm-switch-web.service` | Runs the page at boot (the installer fills in the user and path) |
 | `bin/rootsh` | Runs a command as root through docker, for Sparks where sudo has no password (see below) |
 | `config.example.env` | The cluster's own values: copy it to `~/.config/glm-switch/config.env` |
@@ -41,7 +41,29 @@ glm-switch status            # which weights are serving, and whether the cluste
 glm-switch weights           # which weights are complete on every Spark
 glm-switch ablit             # switch to Ablit (refuses while requests run)
 glm-switch normal --force    # switch even if requests are running (they are cut off)
+glm-switch conns             # the clients connected to the model: streaming, waiting for a reply, or idle
+glm-switch drop 10.2.2.16:59466   # close one client's connection: the server cancels that request only
+glm-switch drop all          # free every slot without reloading the model
+glm-switch restart --force   # reload the weights now serving (2–3 min, every request is cut off)
+glm-switch diag              # save metrics, connections and every Spark's logs to ~/glm-diag/diag-<time>.tar.gz
 ```
+
+## When a request is stuck
+
+The page's **Requests** card lists every client connection. *Waiting for reply* means the request is in its prompt
+(prefill) or queued; one waiting over 2 minutes is flagged. The **Unstick** card goes from least to most disruptive:
+
+1. **Drop** (one request) or **Drop all**: closes the connection(s) from the head (`ss -K`, as root). TensorFold checks
+   between prompt chunks and decode rounds whether the client is still there, so it cancels the request within a few
+   seconds and frees the slot; other requests keep going. The client sees a connection error and may retry.
+2. **Restart model**: if a dropped request still counts as running after about 30 s, the server is stuck somewhere it
+   doesn't check for cancels (a collective between the Sparks, for example). This restarts glm53 on the same weights and
+   sends a test question, like a switch without the change.
+3. **Capture diagnostics** (any time, best while it's stuck): two metrics readings 5 s apart, the connections, the
+   glm53 journal, and from every Spark the GPU, ring link counters, `dmesg` and the model log. The last 20 bundles are kept.
+
+A waiting request is inferred: the server's running count minus the connections streaming a reply. A very long prompt
+also waits for minutes (about 2.5k prompt tokens/s on 3 Sparks, less while others decode).
 
 **For other tools:** `GET /api/status` returns everything as JSON. `state` is one of `up`, `starting`, `switching`,
 `down` or `failed`.

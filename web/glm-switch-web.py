@@ -6,6 +6,9 @@ telemetry in the background, so a page load never waits on ssh.
   GET  /             the page
   GET  /api/status   state, live numbers, each Spark, downloads, the last switch's log (JSON, for other tools too)
   POST /api/switch   {"target": "normal" | "ablit", "force": false}
+  POST /api/restart  {"force": false}      restart the model on the weights it serves now
+  POST /api/drop     {"peer": "ip:port" | "all"}   close a client's connection; the server cancels its request
+  POST /api/diag     {}                    save a diagnostics bundle; GET /diag/<name>.tar.gz downloads it
 Stdlib only. Port 8891 (GLM_SWITCH_PORT).
 """
 import fcntl
@@ -24,6 +27,8 @@ TOOL = os.path.join(HOME, "bin", "glm-switch")
 LOG = os.path.join(HOME, "glm-switch.log")  # glm-switch writes it itself (CLI or page)
 PIDFILE = "/tmp/glm-switch.pid"
 PREP_LOG = os.path.join(HOME, "ablit-prepare.log")
+DIAG_DIR = os.path.join(HOME, "glm-diag")
+STUCK_S = 120  # a request waiting this long with no reply is flagged on the page
 
 
 def _config(path):
@@ -57,6 +62,7 @@ _cache = {}
 _rate = {"t": None, "tokens": None, "tps": 0.0}
 _since = {"state": None, "t": None}
 _wake = threading.Event()  # set when the cached state is stale: the sampler re-reads at once
+_diag = {"running": False, "file": None, "error": None, "finished": None}
 
 
 def sh(cmd, timeout=20):
@@ -145,6 +151,20 @@ def downloads():
             "last_line": lines[-1][-200:] if lines else ""}
 
 
+def connections():
+    """The model server's clients, from `glm-switch conns`: who, streaming / waiting / idle, seconds since the request."""
+    names = dict(e.split("=", 1) for e in CONF.get("CLIENTS", "").split() if "=" in e)
+    out = []
+    for line in sh([TOOL, "conns", "--tsv"], 20)[1].splitlines():
+        f = line.split("\t")
+        if len(f) == 4 and f[2].isdigit() and f[3].isdigit():
+            ip = f[0].rsplit(":", 1)[0]
+            out.append({"peer": f[0], "client": names.get(ip, ip), "state": f[1], "seconds": int(f[2]),
+                        "bytes_sent": int(f[3]), "stuck": f[1] == "waiting" and int(f[2]) >= STUCK_S})
+    order = {"waiting": 0, "streaming": 1, "idle": 2}
+    return sorted(out, key=lambda c: (order.get(c["state"], 3), -c["seconds"]))
+
+
 def systemd(unit, prop):
     return sh(["systemctl", "show", "-p", prop, "--value", unit])[1]
 
@@ -210,6 +230,7 @@ def sample_forever():
                     "pool_free_pct": round(100 * h.get("pool_free_tokens", 0) / max(1, h.get("pool_tokens", 1))),
                 },
                 "nodes": nodes, "download": downloads(), "updated": int(now), "error": None,
+                "connections": connections() if h and h.get("ok") else [], "stuck_after_s": STUCK_S,
             })
         except Exception as e:  # keep sampling; show the error instead of a stale page
             _cache["error"] = str(e)
@@ -235,19 +256,24 @@ def status():
         except OSError:
             out["switch_started"] = None
     # the last finished switch: "... DONE: serving ablit, took 187s" or "... ROLLED BACK: serving normal, took 402s"
-    m = re.search(r"(DONE|ROLLED BACK): serving (\w+), took (\d+)s", out.get("log", ""))
+    # or "... RESTARTED: serving ablit, took 130s"; the log's first line names the action (normal, ablit, restart)
+    m = re.search(r"(DONE|ROLLED BACK|RESTARTED): serving (\w+), took (\d+)s", out.get("log", ""))
     out["last_switch"] = {"result": m.group(1).lower(), "serving": m.group(2), "seconds": int(m.group(3)),
                           "finished": os.path.getmtime(LOG)} if m and not out["switching"] else None
+    a = re.match(r"\S+ \S+ glm-switch (\w+)", out.get("log", ""))
+    out["action"] = a.group(1) if a else None
+    out["diag"] = dict(_diag)
     return out
 
 
 def start_switch(target, force):
+    """target: normal, ablit or restart (the same lock, log and refusals)."""
     with _lock:
         try:  # glm-switch's own lock (flock(1) and fcntl.flock are the same lock): free, or a switch is running
             with open(LOCK, "a") as f:
                 fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            return False, "a switch is already running"
+            return False, "a switch or restart is already running"
         # detached, so a restart of this page leaves it running; it writes its own log once it holds the lock.
         # stderr carries only what it says before that (or a refusal), read below
         p = subprocess.Popen([TOOL, target] + (["--force"] if force else []), stdin=subprocess.DEVNULL,
@@ -266,6 +292,31 @@ def start_switch(target, force):
             except (OSError, IndexError):
                 msg = "the switch stopped (exit %d)" % p.returncode
         return False, msg.replace("glm-switch: ", "")
+
+
+def drop(peer):
+    if peer != "all" and not re.fullmatch(r"[0-9.]+:[0-9]+", peer or ""):
+        return False, "peer must be ip:port or all"
+    try:
+        r = subprocess.run([TOOL, "drop", peer], capture_output=True, text=True, timeout=330)
+        ok, msg = r.returncode == 0, (r.stdout or r.stderr).strip().replace("glm-switch: ", "")
+    except (subprocess.TimeoutExpired, OSError):
+        ok, msg = False, ""
+    _wake.set()
+    return ok, msg or "the drop failed"
+
+
+def run_diag():
+    def work():
+        rc, out = sh([TOOL, "diag"], 300)
+        name = os.path.basename(out.splitlines()[-1]) if rc == 0 and out else None
+        _diag.update(running=False, file=name, error=None if name else "the bundle failed", finished=time.time())
+    with _lock:
+        if _diag["running"]:
+            return False, "already collecting"
+        _diag.update(running=True, error=None)
+    threading.Thread(target=work, daemon=True).start()
+    return True, "started"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -291,13 +342,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, f.read(), "text/html; charset=utf-8")
         elif self.path == "/api/status":
             self._send(200, json.dumps(status()))
+        elif re.fullmatch(r"/diag/diag-\d{8}-\d{6}\.tar\.gz", self.path):
+            try:
+                with open(os.path.join(DIAG_DIR, self.path.rsplit("/", 1)[1]), "rb") as f:
+                    self._send(200, f.read(), "application/gzip")
+            except OSError:
+                self._send(404, '{"error": "no such bundle"}')
         else:
             self._send(404, '{"error": "not found"}')
 
     def do_POST(self):
         if not self._host_ok():
             return self._send(421, '{"error": "unknown host"}')
-        if self.path != "/api/switch":
+        if self.path not in ("/api/switch", "/api/restart", "/api/drop", "/api/diag"):
             return self._send(404, '{"error": "not found"}')
         # a custom header and JSON: another site's page cannot send either without a CORS preflight, never granted here
         if self.headers.get("X-GLM-Switch") != "1":
@@ -312,10 +369,17 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             return self._send(400, '{"error": "bad json"}')
-        target = body.get("target")
-        if target not in ("normal", "ablit"):
-            return self._send(400, '{"error": "target must be normal or ablit"}')
-        ok, msg = start_switch(target, bool(body.get("force")))
+        if self.path == "/api/drop":
+            ok, msg = drop(body.get("peer"))
+        elif self.path == "/api/diag":
+            ok, msg = run_diag()
+        elif self.path == "/api/restart":
+            ok, msg = start_switch("restart", bool(body.get("force")))
+        else:
+            target = body.get("target")
+            if target not in ("normal", "ablit"):
+                return self._send(400, '{"error": "target must be normal or ablit"}')
+            ok, msg = start_switch(target, bool(body.get("force")))
         self._send(200 if ok else 409, json.dumps({"ok": ok, "message": msg}))
 
     def log_message(self, *a):

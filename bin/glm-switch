@@ -3,6 +3,10 @@
 #   glm-switch status            which weights are serving, and whether the cluster is up
 #   glm-switch weights           which weights are complete on all three Sparks
 #   glm-switch normal|ablit      switch (refuses while requests are running; --force to switch anyway)
+#   glm-switch restart           restart the model on the weights it serves now (refuses while requests run; --force)
+#   glm-switch conns [--tsv]     the clients connected to the model server: streaming, waiting for a reply, or idle
+#   glm-switch drop PEER|all     close a client's connection (ip:port from conns): the server cancels its request
+#   glm-switch diag              save a diagnostics bundle (metrics, connections, logs of every Spark) in ~/glm-diag
 # Flags: --force, --no-rollback
 # The choice is the ABLIT= line in the recipe's .env; the glm53 systemd service does the start.
 # A switch logs to ~/glm-switch.log and holds /tmp/glm-switch.lock (its pid in /tmp/glm-switch.pid).
@@ -15,6 +19,9 @@ source "$CONF"
 REPO=${RECIPE_DIR:-$HOME/GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold}
 ENV=$REPO/.env
 API=${API_URL:-http://127.0.0.1:8888}
+API_PORT=${API##*:}; API_PORT=${API_PORT%%/*}
+DIAG_DIR=$HOME/glm-diag
+STREAMING_MS=3000                    # a connection sent data this recently: its reply is streaming
 read -ra WORKERS <<< "${WORKERS:?set WORKERS in $CONF}"
 NORMAL_DIR=models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold
 ABLIT_DIR=models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit
@@ -38,6 +45,28 @@ up() { curl -sf -m 4 "$API/health" | grep -q '"ok": true'; }
 running() {  # requests running or waiting on the server (0 when it is down)
   curl -s -m 4 "$API/metrics" 2>/dev/null |
     awk '/^tensorfold:requests_(running|waiting)[ {]/ { s += $NF } END { print int(s) }'
+}
+
+label() {  # $1 = client ip: its name from CLIENTS ("ip=name ..." in the config), else the ip
+  local e; for e in ${CLIENTS:-}; do [[ ${e%%=*} == "$1" ]] && { echo "${e#*=}"; return; }; done; echo "$1"
+}
+
+conns() {  # one tab-separated line per client: peer, state (streaming|waiting|idle), seconds since its request, bytes sent
+  # The server says how many requests it holds; the connections that are not streaming and sent most recently are
+  # those still waiting for a reply (in prefill or queued), the rest are idle keep-alives.
+  local raw held streaming
+  raw=$(ss -tnoiH state established "( sport = :$API_PORT )" | awk '
+    /^[^ \t]/ { peer = $4; next }
+    { snd = rcv = sent = 0
+      for (i = 1; i <= NF; i++) { split($i, kv, ":")
+        if (kv[1] == "lastsnd") snd = kv[2]; else if (kv[1] == "lastrcv") rcv = kv[2]; else if (kv[1] == "bytes_sent") sent = kv[2] }
+      print peer "\t" snd "\t" rcv "\t" sent }')
+  [[ -n $raw ]] || return 0
+  held=$(running)
+  streaming=$(awk -F'\t' -v s=$STREAMING_MS '$2 < s' <<< "$raw" | grep -c .)
+  sort -t$'\t' -k3,3n <<< "$raw" | awk -F'\t' -v s=$STREAMING_MS -v w=$(( held > streaming ? held - streaming : 0 )) '
+    { state = $2 < s ? "streaming" : (w-- > 0 ? "waiting" : "idle")
+      printf "%s\t%s\t%d\t%s\n", $1, state, $3 / 1000, $4 }'
 }
 
 set_mode() {  # $1 = normal|ablit: replace every ABLIT= line of .env (export/quoted forms too), keep the rest (HF_TOKEN)
@@ -96,19 +125,83 @@ status() {
   if up; then echo "api:        up, $(running) request(s) running or waiting"; else echo "api:        down"; fi
 }
 
+take_lock() {  # $* = the command line for the log: one switch or restart at a time, logged to $LOG
+  exec 9>>"$LOCK"; flock -n 9 || die "another switch or restart is running"
+  trap '' HUP PIPE                 # a closed ssh session or a broken pipe must not stop it halfway
+  echo $$ > "$PIDFILE"; trap 'rm -f "$PIDFILE"' EXIT
+  exec > >(tee -p "$LOG") 2>&1     # -p: keep writing the log when the terminal is gone
+  echo "$(date '+%F %T') glm-switch $*"
+}
+
+node_diag() {  # what one Spark shows: run there (through ssh for a worker); root for dmesg
+  local i
+  echo "== $(hostname) $(date '+%F %T')"; uptime; free -g
+  echo "== gpu"; nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,clocks.sm,power.draw --format=csv
+  echo "== containers"; docker ps -a --filter name=glm53 --format '{{.Names}} {{.Status}}'
+  echo "== ring links"
+  for i in enp1s0f0np0 enp1s0f1np1 enP2p1s0f0np0 enP2p1s0f1np1; do
+    ip -s -o link show "$i" 2>/dev/null; ethtool -S "$i" 2>/dev/null | grep -iE 'err|drop|discard|timeout' | grep -vE ': 0$' | sed "s/^/  $i/"
+  done
+  echo "== dmesg (last 150)"; timeout 60 ${ROOT_CMD:-sudo -n} dmesg -T 2>&1 | tail -150
+  echo "== model log (last 400)"; docker logs --tail 400 -t glm53-flash-tf 2>&1
+}
+
+diag() {
+  local d t w name
+  t=$(date +%Y%m%d-%H%M%S); d=$(mktemp -d); name=diag-$t
+  mkdir -p "$d/$name" "$DIAG_DIR"
+  { status; echo; echo "== connections (peer, state, s since request, bytes sent)"; conns; } > "$d/$name/head-status.txt" 2>&1
+  curl -s -m 5 "$API/metrics" > "$d/$name/metrics-0s.txt"; curl -s -m 5 "$API/health" > "$d/$name/health.json"
+  ss -tnoi state established "( sport = :$API_PORT )" > "$d/$name/connections.txt"
+  journalctl -u glm53 -n 300 --no-pager > "$d/$name/glm53-journal.txt" 2>&1
+  node_diag > "$d/$name/node-head.txt" 2>&1 &
+  for w in "${WORKERS[@]}"; do
+    ssh -o BatchMode=yes -o ConnectTimeout=5 "$w" "ROOT_CMD='$ROOT_CMD'; $(declare -f node_diag); node_diag" \
+      < /dev/null > "$d/$name/node-${w#*@}.txt" 2>&1 &
+  done
+  sleep 5; curl -s -m 5 "$API/metrics" > "$d/$name/metrics-5s.txt"   # two readings: is anything moving?
+  wait
+  tar -czf "$DIAG_DIR/$name.tar.gz" -C "$d" "$name" && rm -rf "$d"
+  ls -1t "$DIAG_DIR"/diag-*.tar.gz | tail -n +21 | xargs -r rm -f   # keep the last 20
+  echo "$DIAG_DIR/$name.tar.gz"
+}
+
 cmd=${1:-status}; shift || true
-force=0; rollback=1
-for a in "$@"; do case $a in --force) force=1 ;; --no-rollback) rollback=0 ;; *) die "unknown flag $a" ;; esac; done
+force=0; rollback=1; tsv=0; peer=
+for a in "$@"; do case $a in --force) force=1 ;; --no-rollback) rollback=0 ;; --tsv) tsv=1 ;;
+  -*) die "unknown flag $a" ;; *) [[ $cmd == drop && -z $peer ]] && peer=$a || die "unexpected argument $a" ;; esac; done
 
 case $cmd in
   status) status ;;
   weights) for m in normal ablit; do have_weights "$m" >/dev/null && echo "$m: ready" || echo "$m: missing"; done ;;
+  conns)
+    if (( tsv )); then conns; exit; fi
+    printf '%-24s %-22s %-10s %8s %10s\n' CLIENT PEER STATE FOR SENT
+    conns | while IFS=$'\t' read -r p st age sent; do
+      printf '%-24s %-22s %-10s %7ss %10s\n' "$(label "${p%:*}")" "$p" "$st" "$age" "$sent"; done ;;
+  drop)
+    [[ -n $peer ]] || die "drop what? a peer from 'glm-switch conns' (ip:port), or all"
+    if [[ $peer == all ]]; then filter="( sport = :$API_PORT )"
+    else
+      [[ $peer =~ ^[0-9.]+:[0-9]+$ ]] || die "not an ip:port: $peer"
+      conns | cut -f1 | grep -qxF "$peer" || die "no client connection $peer"
+      filter="( sport = :$API_PORT and dst $peer )"
+    fi
+    n=$(conns | grep -c .)
+    root ss -K state established "$filter" >/dev/null 2>&1   # the server sees the close and cancels the request
+    sleep 1
+    if [[ $peer == all ]]; then echo "dropped $n connection(s); $(conns | grep -c .) left"
+    elif conns | cut -f1 | grep -qxF "$peer"; then die "$peer is still connected"
+    else echo "dropped $peer ($(label "${peer%:*}"))"; fi ;;
+  diag) diag ;;
+  restart)
+    n=$(running); (( n == 0 || force )) || die "$n request(s) running or waiting; try again later or add --force"
+    take_lock restart "$@"             # after the check: a refusal leaves the last switch's log alone
+    now=$(serving)
+    if restart_and_wait && smoke; then echo "$(date +%T) RESTARTED: serving $(serving), took ${SECONDS}s"; exit 0; fi
+    echo "$(date +%T) the restart did not bring $now back up"; exit 1 ;;
   normal|ablit)
-    exec 9>>"$LOCK"; flock -n 9 || die "another switch is running"
-    trap '' HUP PIPE                 # a closed ssh session or a broken pipe must not stop a switch halfway
-    echo $$ > "$PIDFILE"; trap 'rm -f "$PIDFILE"' EXIT
-    exec > >(tee -p "$LOG") 2>&1     # -p: keep writing the log when the terminal is gone
-    echo "$(date '+%F %T') glm-switch $cmd $*"
+    take_lock "$cmd" "$@"
     if [[ "$(serving)" == "$cmd" ]] && up; then echo "already serving $cmd"; set_mode "$cmd"; exit 0; fi
     pgrep -f scripts/prepare.sh >/dev/null && die "prepare.sh is running (a download or copy); try again when it ends"
     have_weights "$cmd" || die "switch cancelled: get the weights first (ABLIT=$([[ $cmd == ablit ]] && echo 1 || echo 0) TP=3 scripts/prepare.sh)"
@@ -123,5 +216,5 @@ case $cmd in
       set_mode "$prev"; restart_and_wait && smoke && echo "$(date +%T) ROLLED BACK: serving $prev, took ${SECONDS}s"
     fi
     exit 1 ;;
-  *) sed -n '2,9p' "$0"; exit 2 ;;
+  *) sed -n '2,13p' "$0"; exit 2 ;;
 esac

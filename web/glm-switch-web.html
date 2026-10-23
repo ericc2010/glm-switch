@@ -61,6 +61,12 @@
   .timer .step { color: var(--muted); font-size: 14px; margin-top: 2px; }
   .bar.warn-fill > div { background: var(--warn); }
   .last { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  .banner { background: var(--warn-bg); color: var(--warn); border-radius: 10px; padding: 10px 14px; margin-top: 14px;
+            font-size: 14px; font-weight: 600; }
+  .buttons.three { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  button.small { padding: 5px 12px; font-size: 13px; border-radius: 8px; }
+  button.danger { color: var(--bad); border-color: var(--bad); }
+  td.act { text-align: right; width: 1%; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -92,6 +98,35 @@
       <div class="stat"><div class="v" id="served">–</div><div class="k">requests since start</div></div>
       <div class="stat"><div class="v" id="pool">–</div><div class="k">memory pool free</div></div>
     </div>
+    <div class="banner" id="stuck" hidden></div>
+  </section>
+
+  <section class="card">
+    <h2>Requests</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Client</th><th>State</th><th>Since request</th><th>Sent</th><th></th></tr></thead>
+        <tbody id="conns"></tbody>
+      </table>
+    </div>
+    <p class="note">Waiting means the request is in its prompt (prefill) or queued, with no reply yet; a very long prompt
+      can take minutes. <strong>Drop</strong> closes that client's connection and the server cancels its request within
+      seconds; the others keep going. The client sees an error and may send it again.</p>
+  </section>
+
+  <section class="card">
+    <h2>Unstick</h2>
+    <div class="buttons three">
+      <button id="b-dropall" onclick="dropPeer('all')">Drop all requests</button>
+      <button id="b-restart" class="danger" onclick="restart()">Restart model</button>
+      <button id="b-diag" onclick="diag()">Capture diagnostics</button>
+    </div>
+    <p class="note" id="diag-note" hidden></p>
+    <p class="note">Try them in this order. <strong>Drop all</strong> frees every slot in seconds without reloading the
+      model. If a dropped request still counts as running after about 30 s, the server is stuck below the point where
+      it checks for cancels: <strong>Restart model</strong> reloads the same weights (about 2–3 min, every request is
+      cut off, Atlas uses the cloud meanwhile). <strong>Capture diagnostics</strong> first, while it is stuck: it saves
+      the metrics, connections and every Spark's logs for a look afterwards.</p>
   </section>
 
   <section class="card">
@@ -136,6 +171,8 @@
         <li>ssh to the head Spark</li>
         <li><code>glm-switch status</code> — what is running</li>
         <li><code>glm-switch ablit</code> or <code>glm-switch normal</code> — switch (add <code>--force</code> if requests are running)</li>
+        <li><code>glm-switch conns</code>, <code>glm-switch drop &lt;ip:port&gt;|all</code>, <code>glm-switch restart</code>,
+          <code>glm-switch diag</code> — the Requests and Unstick cards</li>
       </ol>
       <p class="note">For other tools: <code>GET /api/status</code> on this page's address returns all of this as JSON
         (<code>state</code> is <code>up</code>, <code>starting</code>, <code>switching</code>, <code>down</code> or <code>failed</code>).</p>
@@ -148,7 +185,8 @@ const $ = id => document.getElementById(id);
 const NAMES = { normal: "Normal", ablit: "Ablit", none: "No model", unknown: "Unknown" };
 const STATE = { up: "Up", starting: "Starting", switching: "Switching", down: "Down", failed: "Failed" };
 let busy = false, timer = null;
-const TYPICAL_S = 210;  // a switch usually takes 3–4 min
+const TYPICAL = { restart: 140, switch: 210 };  // a restart usually takes 2–2.5 min, a switch 3–4 min
+let TYPICAL_S = TYPICAL.switch, lastState = null;
 let clock = { started: null, offset: 0 };  // offset: server clock minus this browser's clock
 
 const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -185,13 +223,16 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;",
 function paint(s) {
   if (!s.state) { $("hero").textContent = s.error ? "Status error: " + s.error : "Collecting the first reading…"; return; }
   busy = s.switching || s.state === "starting";
-  $("pill").textContent = STATE[s.state] || s.state;
+  lastState = s;
+  const restarting = s.switching && s.action === "restart";
+  TYPICAL_S = restarting ? TYPICAL.restart : TYPICAL.switch;
+  $("pill").textContent = restarting ? "Restarting" : STATE[s.state] || s.state;
   $("pill").className = "pill " + s.state;
   const model = NAMES[s.serving] || s.serving;
   const hero = {
     up: `${model} model is answering`,
     starting: "Loading the model on all three Sparks",
-    switching: `Switching to ${NAMES[s.configured] || s.configured}`,
+    switching: restarting ? `Restarting the ${model} model` : `Switching to ${NAMES[s.configured] || s.configured}`,
     down: "The model is stopped",
     failed: "The model failed to start; it retries every minute (see the last switch below, or journalctl -u glm53)",
   }[s.state];
@@ -212,7 +253,8 @@ function paint(s) {
   $("last").hidden = !ls || s.switching;
   if (ls) {
     const ago = Math.round((s.now - ls.finished) / 60);
-    $("last").textContent = (ls.result === "done" ? `Last switch, to ${NAMES[ls.serving] || ls.serving}, took ${mmss(ls.seconds)}`
+    $("last").textContent = (ls.result === "restarted" ? `Last restart, of ${NAMES[ls.serving] || ls.serving}, took ${mmss(ls.seconds)}`
+      : ls.result === "done" ? `Last switch, to ${NAMES[ls.serving] || ls.serving}, took ${mmss(ls.seconds)}`
       : `Last switch failed and went back to ${NAMES[ls.serving] || ls.serving} (${mmss(ls.seconds)} in all)`)
       + (ago < 1 ? " · just now" : ago < 120 ? ` · ${ago} min ago` : "");
   }
@@ -235,6 +277,28 @@ function paint(s) {
       <td>${esc(n.gpu_pct ?? "–")}%</td><td>${esc(n.temp_c ?? "–")} °C</td><td>${esc(num(n.clock_mhz))} MHz</td>
       <td>${esc(n.mem_free_gib ?? "–")} GiB</td><td>${dur(n.uptime_s)}</td></tr>`;
   }).join("");
+
+  const C = s.connections || [];
+  const STATES = { streaming: ["Streaming", "ok"], waiting: ["Waiting for reply", "warn"], idle: ["Idle", "muted"] };
+  $("conns").innerHTML = C.length ? C.map(c => {
+    const [label, cls] = STATES[c.state] || [c.state, ""];
+    return `<tr><td><strong>${esc(c.client)}</strong><br><span class="muted">${esc(c.peer)}</span></td>
+      <td class="${c.stuck ? "bad" : cls}">${label}${c.stuck ? " — stuck?" : ""}</td>
+      <td>${c.state === "idle" ? "–" : dur(c.seconds)}</td><td>${num(c.bytes_sent)} B</td>
+      <td class="act"><button class="small" ${busy ? "disabled" : ""} onclick="dropPeer('${esc(c.peer)}')">Drop</button></td></tr>`;
+  }).join("") : `<tr><td colspan="5" class="muted">No clients connected</td></tr>`;
+  const stuck = C.filter(c => c.stuck);
+  $("stuck").hidden = !stuck.length;
+  if (stuck.length) $("stuck").textContent = stuck.map(c => `${c.client} has waited ${dur(c.seconds)} with no reply`).join(" · ")
+    + " — if that's not a very long prompt, Drop it under Requests.";
+  $("b-dropall").disabled = busy || !C.length;
+  $("b-restart").disabled = busy;
+  const D = s.diag || {};
+  $("b-diag").disabled = !!D.running;
+  $("b-diag").textContent = D.running ? "Collecting… (about 30 s)" : "Capture diagnostics";
+  $("diag-note").hidden = !(D.file || D.error);
+  $("diag-note").innerHTML = D.error ? `<span class="bad">${esc(D.error)}</span>`
+    : D.file ? `Last bundle: <a href="/diag/${esc(D.file)}" download>${esc(D.file)}</a> (also in <code>~/glm-diag</code> on the head)` : "";
 
   const d = s.download;
   $("dl-card").hidden = !d;
@@ -263,6 +327,36 @@ async function refresh() {
   try { paint(await (await fetch("/api/status")).json()); }
   catch { $("pill").textContent = "?"; $("pill").className = "pill down"; $("hero").textContent = "Can't reach the status service on the head Spark"; }
   clearTimeout(timer); timer = setTimeout(refresh, busy ? 3000 : 5000);
+}
+
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-GLM-Switch": "1" },
+    body: JSON.stringify(body) });
+  return r.json();
+}
+
+async function dropPeer(peer) {
+  const c = (lastState?.connections || []).find(x => x.peer === peer);
+  const n = (lastState?.connections || []).length;
+  if (!confirm(peer === "all" ? `Drop all ${n} connection(s)? Every running request is cancelled; the clients see an error.`
+      : `Drop ${c ? c.client + " (" + peer + ")" : peer}? Its request is cancelled; the client sees an error.`)) return;
+  const j = await post("/api/drop", { peer });
+  if (!j.ok) alert(j.message);
+  refresh();
+}
+
+async function restart() {
+  const n = lastState?.live?.requests_running || 0;
+  if (!confirm(`Restart the model? It stops for about 2–3 minutes` + (n ? ` and ${n} running request(s) are cut off.` : "."))) return;
+  const j = await post("/api/restart", { force: true });  // the confirm named the requests it cuts off
+  if (!j.ok || j.message !== "started") alert(j.message);
+  busy = true; refresh();
+}
+
+async function diag() {
+  const j = await post("/api/diag", {});
+  if (!j.ok) alert(j.message);
+  refresh();
 }
 
 async function go(target) {
