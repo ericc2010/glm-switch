@@ -15,6 +15,8 @@ source "$CONF"
 install -Dm755 "$HERE/bin/glm-switch" "$HOME/bin/glm-switch"
 install -Dm755 "$HERE/web/glm-switch-web.py" "$WEBDIR/glm-switch-web.py"
 install -Dm644 "$HERE/web/glm-switch-web.html" "$WEBDIR/glm-switch-web.html"
+install -Dm644 "$HERE/web/classic.html" "$WEBDIR/classic.html"
+rm -rf "$WEBDIR/static" && cp -R "$HERE/web/static" "$WEBDIR/static"  # stylesheet, script, fonts, gauges
 sed -e "s|@USER@|$(id -un)|" -e "s|@WEBDIR@|$WEBDIR|g" "$HERE/systemd/glm-switch-web.service" > /tmp/glm-switch-web.service
 ${ROOT_CMD:-sudo -n} sh -c "install -m644 /tmp/glm-switch-web.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable glm-switch-web && systemctl restart glm-switch-web"
 rm -f /tmp/glm-switch-web.service

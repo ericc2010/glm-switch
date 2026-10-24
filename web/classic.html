@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>GLM Cluster Status</title>
+<style>
+  :root {
+    --bg: #0e1013; --card: #15181d; --tile: #1a1e24; --line: #252a32; --line-strong: #323943; --track: #252a32;
+    --text: #e6e8ec; --muted: #8b919c; --faint: #5f6673;
+    --ok: #4cc38a; --ok-bg: rgba(76, 195, 138, .13); --warn: #e3b24a; --warn-bg: rgba(227, 178, 74, .13);
+    --bad: #f0695e; --bad-bg: rgba(240, 105, 94, .13);
+    --accent: #6ea4ff; --accent-text: #0b0e13; --btn: #1c2128; --btn-hover: #242a33; --focus: rgba(110, 164, 255, .5);
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body { margin: 0; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased;
+         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; }
+  main { max-width: 1280px; margin: 0 auto; padding: 24px 20px 40px; }
+  @media (max-width: 600px) { main { padding: 16px 16px 32px; } }
+  .top { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 2px 0 0; font-size: 13px; }
+  .updated { color: var(--faint); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 0 14px; align-items: start; }
+  @media (max-width: 980px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+
+  .hero { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .pill { font-weight: 700; font-size: 15px; padding: 5px 12px; border-radius: 999px; letter-spacing: .01em; }
+  .pill.up { color: var(--ok); background: var(--ok-bg); }
+  .pill.starting, .pill.switching { color: var(--warn); background: var(--warn-bg); }
+  .pill.down, .pill.failed, .pill.unresponsive { color: var(--bad); background: var(--bad-bg); }
+  .hero-text { font-size: 16px; font-weight: 600; }
+  .hero-sub { color: var(--muted); font-size: 13px; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  .stat { background: var(--tile); border-radius: 10px; padding: 11px 13px 10px; min-width: 0; }
+  .stat .v { font-size: 23px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.015em; line-height: 1.2;
+             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat .k { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .rowhead { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 16px 0 8px;
+             color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .07em; font-weight: 600; }
+  .rowhead span { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--faint); }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); font-size: 13.5px; vertical-align: middle; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: rgba(255, 255, 255, .02); }
+  .tablewrap { overflow-x: auto; margin: 0 -6px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); } .muted { color: var(--muted); }
+
+  .bar { height: 6px; background: var(--track); border-radius: 99px; overflow: hidden; margin: 4px 0 10px; }
+  .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .6s; }
+  .bar.warn-fill > div { background: var(--warn); }
+  .dl-row { display: flex; justify-content: space-between; font-size: 13px; }
+
+  .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .buttons.three { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  button { font: inherit; font-weight: 600; font-size: 14px; padding: 11px 12px; border-radius: 9px; cursor: pointer;
+           border: 1px solid var(--line-strong); background: var(--btn); color: var(--text); transition: background .12s, border-color .12s; }
+  button:hover:not(:disabled) { background: var(--btn-hover); border-color: #3f4753; }
+  button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button.primary:hover:not(:disabled) { background: #85b3ff; border-color: #85b3ff; }
+  button.danger { color: var(--bad); border-color: rgba(240, 105, 94, .45); }
+  button.danger:hover:not(:disabled) { background: var(--bad-bg); border-color: var(--bad); }
+  button.small { padding: 4px 11px; font-size: 12.5px; border-radius: 7px; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  td.act { text-align: right; width: 1%; white-space: nowrap; }
+  label { display: flex; gap: 8px; align-items: center; margin-top: 10px; color: var(--muted); font-size: 13px; }
+  input[type=checkbox] { accent-color: var(--accent); }
+
+  .note { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+  .note a { color: var(--accent); }
+  details.help { margin-top: 10px; color: var(--muted); font-size: 13px; }
+  details.help summary { cursor: pointer; color: var(--faint); font-size: 12.5px; list-style: none; }
+  details.help summary::before { content: "▸ "; font-size: 11px; }
+  details.help[open] summary::before { content: "▾ "; }
+  details.help summary::-webkit-details-marker { display: none; }
+  details.help summary:hover { color: var(--muted); }
+  details.help p { margin: 8px 0 0; }
+  details.help em { color: var(--text); font-style: normal; }
+  details.help strong { color: var(--text); }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.45 ui-monospace, Menlo, monospace;
+        max-height: 220px; overflow: auto; color: #c9ced6; }
+  details summary { cursor: pointer; font-weight: 600; }
+  ol { padding-left: 20px; margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+  code { font: 12.5px ui-monospace, Menlo, monospace; color: var(--text); background: var(--tile); padding: 1px 5px; border-radius: 4px; }
+  .timer { margin-top: 14px; }
+  .timer .clock { font-size: 36px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: .01em; line-height: 1.1; }
+  .timer .step { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .last { color: var(--muted); font-size: 13px; margin-top: 10px; }
+  .banner { background: var(--warn-bg); color: var(--warn); border-left: 3px solid var(--warn); border-radius: 8px;
+            padding: 9px 12px; margin-top: 12px; font-size: 13px; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <div>
+      <h1>GLM cluster</h1>
+      <p class="sub">GLM-5.3 on three DGX Sparks: status, live numbers and the model switch.</p>
+    </div>
+    <p class="updated" id="updated"></p>
+  </header>
+
+  <section class="card">
+    <div class="hero">
+      <span class="pill" id="pill">…</span>
+      <div>
+        <div class="hero-text" id="hero">Loading…</div>
+        <div class="hero-sub" id="hero-sub"></div>
+      </div>
+    </div>
+    <div class="timer" id="timer" hidden>
+      <div class="clock" id="clock">0:00</div>
+      <div class="bar" id="tbar"><div id="tfill"></div></div>
+      <div class="step" id="step"></div>
+    </div>
+    <div class="last" id="last" hidden></div>
+  </section>
+
+  <div class="grid">
+  <div>
+    <section class="card" id="live-card">
+      <h2>Live</h2>
+      <div class="stats">
+        <div class="stat"><div class="v" id="tps">–</div><div class="k">tokens/s right now</div></div>
+        <div class="stat"><div class="v" id="active">–</div><div class="k">requests running</div></div>
+        <div class="stat"><div class="v" id="cable">–</div><div class="k" id="cable-k">on the cables</div></div>
+        <div class="stat"><div class="v" id="pool">–</div><div class="k">memory pool free</div></div>
+      </div>
+      <div class="banner" id="stuck" hidden></div>
+      <div class="rowhead">Totals <span id="totals-since"></span></div>
+      <div class="stats">
+        <div class="stat"><div class="v" id="served">–</div><div class="k">requests since start</div></div>
+        <div class="stat"><div class="v" id="t-req">–</div><div class="k">requests, all time</div></div>
+        <div class="stat"><div class="v" id="t-prompt">–</div><div class="k">prompt tokens, all time</div></div>
+        <div class="stat"><div class="v" id="t-gen">–</div><div class="k">tokens generated, all time</div></div>
+        <div class="stat"><div class="v" id="t-peak">–</div><div class="k" id="t-peak-k">peak tokens/s</div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Requests</h2>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Client</th><th>State</th><th>Since request</th><th>Sent</th><th></th></tr></thead>
+          <tbody id="conns"></tbody>
+        </table>
+      </div>
+      <p class="note" id="unmatched" hidden></p>
+      <details class="help">
+        <summary>What the states mean</summary>
+        <p><em>Waiting</em> means no reply has been sent yet: the request is in its prompt (prefill), queued, or is a
+          non-streaming request still being answered; a very long prompt can take minutes. The cables between the
+          Sparks tell the difference: <em>prompt loading</em> means the prompt is being read (about 2.3 GB/s),
+          <em>engine stalled</em> means nothing has moved for 30 s with work held. <em>Gone</em> means the client
+          already hung up but its request still holds a slot.</p>
+        <p><strong>Drop</strong> closes that client's connection and the server cancels its request within seconds;
+          the others keep going. The client sees an error and may send it again.</p>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>Sparks</h2>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Spark</th><th>Status</th><th>Model process</th><th>Cables</th><th>GPU</th><th>Temp</th><th>Clock</th><th>Free memory</th><th>Up for</th></tr></thead>
+          <tbody id="nodes"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div>
+    <section class="card">
+      <h2>Unstick</h2>
+      <div class="buttons three">
+        <button id="b-dropall" onclick="dropPeer('all')">Drop all requests</button>
+        <button id="b-restart" class="danger" onclick="restart()">Restart model</button>
+        <button id="b-diag" onclick="diag()">Capture diagnostics</button>
+      </div>
+      <p class="note" id="unstick-msg" hidden></p>
+      <p class="note" id="diag-note" hidden></p>
+      <p class="note">In this order: capture diagnostics while it is stuck, drop all, and only then restart.</p>
+      <details class="help">
+        <summary>What each one does</summary>
+        <p><strong>Drop all</strong> frees every slot in seconds without reloading the model. If a dropped request
+          still counts as running after about 30 s, the server is stuck below the point where it checks for cancels:
+          <strong>Restart model</strong> reloads the same weights (about 2–3 min, every request is cut off, Atlas uses
+          the cloud meanwhile). <strong>Capture diagnostics</strong> saves the metrics, connections and every Spark's
+          logs for a look afterwards; take it first, while it is stuck.</p>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>Model</h2>
+      <div class="stats" style="margin-bottom:12px">
+        <div class="stat"><div class="v" id="w-normal">–</div><div class="k">Normal weights</div></div>
+        <div class="stat"><div class="v" id="w-ablit">–</div><div class="k">Ablit weights</div></div>
+      </div>
+      <div class="buttons">
+        <button id="b-normal" onclick="go('normal')">Switch to Normal</button>
+        <button id="b-ablit" onclick="go('ablit')">Switch to Ablit</button>
+      </div>
+      <label><input type="checkbox" id="force"> Switch even if requests are running (they will be cut off)</label>
+      <p class="note">A switch stops the model for about 2–6 minutes; Atlas uses the cloud meanwhile. Both models
+        answer to the same name. If the new model fails to start, it goes back by itself.</p>
+    </section>
+
+    <section class="card" id="dl-card" hidden>
+      <h2>Download</h2>
+      <div id="dl"></div>
+    </section>
+
+    <section class="card" id="logcard" hidden>
+      <h2>Last switch</h2>
+      <pre id="log"></pre>
+    </section>
+
+    <section class="card">
+      <details>
+        <summary>Command line and JSON</summary>
+        <ol>
+          <li>ssh to the head Spark</li>
+          <li><code>glm-switch status</code> — what is running</li>
+          <li><code>glm-switch ablit</code> or <code>glm-switch normal</code> — switch (add <code>--force</code> if requests are running)</li>
+          <li><code>glm-switch conns</code>, <code>glm-switch drop &lt;ip:port&gt;|all</code>, <code>glm-switch restart</code>,
+            <code>glm-switch diag</code> — the Requests and Unstick cards</li>
+        </ol>
+        <p class="note">For other tools: <code>GET /api/status</code> on this page's address returns all of this as JSON
+          (<code>state</code> is <code>up</code>, <code>starting</code>, <code>switching</code>, <code>down</code> or <code>failed</code>;
+          <code>totals</code> holds the all-time counts).</p>
+      </details>
+    </section>
+  </div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const NAMES = { normal: "Normal", ablit: "Ablit", none: "No model", unknown: "Unknown" };
+const STATE = { up: "Up", starting: "Starting", switching: "Switching", down: "Down", failed: "Failed", unresponsive: "Not answering" };
+let busy = false, timer = null;
+const TYPICAL = { restart: 140, switch: 210 };  // a restart usually takes 2–2.5 min, a switch 3–4 min
+let TYPICAL_S = TYPICAL.switch, lastState = null;
+let clock = { started: null, offset: 0 };  // offset: server clock minus this browser's clock
+
+const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+function tick() {
+  if (!clock.started) return;
+  const el = Math.max(0, Date.now() / 1000 + clock.offset - clock.started);
+  $("clock").textContent = mmss(el);
+  $("tfill").style.width = Math.min(100, 100 * el / TYPICAL_S) + "%";
+  $("tbar").className = "bar" + (el > TYPICAL_S * 1.4 ? " warn-fill" : "");
+}
+setInterval(tick, 1000);
+
+function stepOf(log) {  // the switch's current step, from its log
+  const l = log.trim().split("\n").reverse();
+  const has = re => l.find(x => re.test(x));
+  if (has(/going back to/)) return "The new model did not start — going back to the previous one";
+  if (has(/up after/)) return "Model is up — sending a test question";
+  if (has(/starting it/)) {
+    const w = has(/waiting\.\.\./);
+    return "Loading the model on all three Sparks" + (w ? "" : "…");
+  }
+  if (has(/stopping the cluster/)) return "Stopping the current model";
+  return "Checking that everything is ready";
+}
+
+function dur(s) {
+  if (s == null || s < 0) return "";
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+  return h ? `${h} h ${m} min` : m ? `${m} min ${sec} s` : `${sec} s`;
+}
+const num = n => n == null ? "–" : Number(n).toLocaleString();
+// 1,234 · 56.7 k · 73.9 M · 1.20 B — the exact figure goes in the tile's tooltip
+const compact = n => n == null ? "–" : n >= 1e9 ? (n / 1e9).toFixed(2) + " B" : n >= 1e6 ? (n / 1e6).toFixed(1) + " M"
+  : n >= 1e4 ? (n / 1e3).toFixed(0) + " k" : num(n);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function big(id, n) { $(id).textContent = compact(n); $(id).title = n == null ? "" : num(n); }
+
+// the meters glide to each new reading over ~0.9 s instead of stepping, so a 2 s poll of 1 s samples reads smoothly
+const glide = {};
+function glideTo(id, v, fmt) {
+  if (v == null) { delete glide[id]; $(id).textContent = "–"; return; }
+  const g = glide[id] || (glide[id] = { cur: v });
+  Object.assign(g, { from: g.cur, to: v, t0: performance.now(), fmt, done: false });
+}
+setInterval(() => {
+  const now = performance.now();
+  for (const [id, g] of Object.entries(glide)) {
+    if (g.done) continue;
+    const p = Math.min(1, (now - g.t0) / 900);
+    g.cur = g.from + (g.to - g.from) * (1 - Math.pow(1 - p, 3));
+    g.done = p >= 1;
+    $(id).textContent = g.fmt(g.cur);
+  }
+}, 50);
+
+function paint(s) {
+  if (!s.state) { $("hero").textContent = s.error ? "Status error: " + s.error : "Collecting the first reading…"; return; }
+  busy = s.switching || s.state === "starting";
+  lastState = s;
+  const restarting = s.switching && s.action === "restart";
+  TYPICAL_S = restarting ? TYPICAL.restart : TYPICAL.switch;
+  $("pill").textContent = restarting ? "Restarting" : STATE[s.state] || s.state;
+  $("pill").className = "pill " + s.state;
+  const model = NAMES[s.serving] || s.serving;
+  const hero = {
+    up: `${model} model is answering`,
+    starting: "Loading the model on all three Sparks",
+    switching: restarting ? `Restarting the ${model} model` : `Switching to ${NAMES[s.configured] || s.configured}`,
+    down: "The model is stopped",
+    failed: "The model failed to start; it retries every minute (see the last switch below, or journalctl -u glm53)",
+    unresponsive: "The model process is running but its API is not answering: try Drop all, then Restart model",
+  }[s.state];
+  $("hero").textContent = hero;
+  $("hero-sub").textContent = (s.state === "up" ? "Answering for " : s.state === "starting" ? "Loading for " : s.state === "unresponsive" ? "Not answering for " : "For ")
+    + dur(s.state_seconds) + (s.state === "starting" ? " (usually 2–6 min)" : "") + (s.error ? " · status error: " + s.error : "");
+
+  if (s.switching && s.switch_started) {
+    clock = { started: s.switch_started, offset: s.now - Date.now() / 1000 };
+    $("timer").hidden = false;
+    $("step").textContent = stepOf(s.log || "") + ` · usually ${mmss(TYPICAL_S - 30)}–${mmss(TYPICAL_S + 30)}`;
+    tick();
+  } else {
+    clock.started = null;
+    $("timer").hidden = true;
+  }
+  const ls = s.last_switch;
+  $("last").hidden = !ls || s.switching;
+  if (ls) {
+    const ago = Math.round((s.now - ls.finished) / 60);
+    $("last").textContent = (ls.result === "restarted" ? `Last restart, of ${NAMES[ls.serving] || ls.serving}, took ${mmss(ls.seconds)}`
+      : ls.result === "done" ? `Last switch, to ${NAMES[ls.serving] || ls.serving}, took ${mmss(ls.seconds)}`
+      : `Last switch failed and went back to ${NAMES[ls.serving] || ls.serving} (${mmss(ls.seconds)} in all)`)
+      + (ago < 1 ? " · just now" : ago < 120 ? ` · ${ago} min ago` : "");
+  }
+
+  const L = s.live;
+  glideTo("tps", L ? L.tokens_per_s : null, v => v.toFixed(1));
+  $("tps").title = L && L.smooth_s ? `mean over the last ${L.smooth_s} s` : "";
+  $("active").textContent = L ? `${L.requests_running} / ${L.max_at_once}` : "–";
+  big("served", L ? L.requests_served : null);
+  $("pool").textContent = L ? L.pool_free_pct + "%" : "–";
+  const G = L && L.progress;
+  const mb = L && L.cable_mb_s;
+  glideTo("cable", mb, v => v >= 1000 ? (v / 1000).toFixed(1) + " GB/s" : Math.round(v) + " MB/s");
+  $("cable").className = "v " + (G && G.state === "stalled" ? "bad" : "");
+  $("cable-k").textContent = "on the cables" + (!G ? "" : G.state === "loading" ? " · a prompt is loading" : G.state === "decoding" ? " · answering"
+    : G.state === "stalled" ? ` · NOTHING MOVING for ${G.stalled_s} s` : " · quiet");
+  const T = s.totals || {};
+  big("t-req", T.requests); big("t-prompt", T.prompt_tokens); big("t-gen", T.completion_tokens);
+  $("t-peak").textContent = T.peak_tps ? Number(T.peak_tps).toFixed(1) : "–";
+  $("t-peak-k").textContent = "peak tokens/s" + (T.peak_tps_t ? " · " + new Date(T.peak_tps_t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "");
+  $("t-peak").title = "the fastest 5-second window of reply tokens, all streams together";
+  $("totals-since").textContent = T.since ? "all time since " + new Date(T.since * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })
+    + " · since start resets at each model restart" : "";
+
+  $("nodes").innerHTML = (s.nodes || []).map(n => {
+    const name = `<td><strong>${esc(n.name)}</strong><br><span class="muted">${esc(n.role)}</span></td>`;
+    if (!n.reachable) return `<tr>${name}<td class="bad">Offline</td><td class="bad" colspan="7">Not reachable</td></tr>`;
+    const running = n.model.startsWith("Up");
+    const ok = running && n.cables_up === 2;
+    return `<tr>${name}
+      <td class="${ok ? "ok" : "warn"}">${ok ? "OK" : running ? "Check cables" : "Online"}</td>
+      <td class="${running ? "ok" : "warn"}">${running ? "Running" : "Not running"}</td>
+      <td class="${n.cables_up === 2 ? "ok" : "bad"}">${esc(n.cables_up ?? "–")} / 2</td>
+      <td>${esc(n.gpu_pct ?? "–")}%</td><td>${esc(n.temp_c ?? "–")} °C</td><td>${esc(num(n.clock_mhz))} MHz</td>
+      <td>${esc(n.mem_free_gib ?? "–")} GiB</td><td>${dur(n.uptime_s)}</td></tr>`;
+  }).join("");
+
+  const C = s.connections || [];
+  const STATES = { streaming: ["Streaming", "ok"], waiting: ["Waiting for reply", "warn"], gone: ["Client gone", "warn"], idle: ["Idle", "muted"] };
+  $("conns").innerHTML = C.length ? C.map(c => {
+    let [label, cls] = STATES[c.state] || [c.state, ""];
+    if (c.note === "loading") label += " · prompt loading";
+    else if (c.note === "stalled") label += " · engine stalled";
+    else if (c.stuck) label += " — stuck?";
+    return `<tr><td><strong>${esc(c.client)}</strong><br><span class="muted">${esc(c.peer)}</span></td>
+      <td class="${c.stuck ? "bad" : cls}">${label}</td>
+      <td>${c.state === "idle" ? "–" : dur(c.seconds)}</td><td>${num(c.bytes_sent)} B</td>
+      <td class="act"><button class="small drop" data-peer="${esc(c.peer)}" ${s.switching ? "disabled" : ""}>Drop</button></td></tr>`;
+  }).join("") : `<tr><td colspan="5" class="muted">No clients connected</td></tr>`;
+  const U = s.unmatched_requests || 0;
+  $("unmatched").hidden = !U;
+  $("unmatched").textContent = `${U} request(s) running with no connection listed (the client hung up, or it was sent from the head itself). Drop all cannot reach it; if it never ends, restart the model.`;
+  const stuck = C.filter(c => c.stuck);
+  $("stuck").hidden = !stuck.length && !(G && G.state === "stalled");
+  if (G && G.state === "stalled") $("stuck").textContent = `The engine has moved nothing over the cables for ${dur(G.stalled_s)} with `
+    + `${G.filling + G.decoding} stream(s) held: a real hang, not a long prompt. Drop the waiting request(s); if the count stays, restart the model.`;
+  else if (stuck.length) $("stuck").textContent = stuck.map(c => `${c.client} has waited ${dur(c.seconds)} with no reply`).join(" · ")
+    + " — if that's not a very long prompt, Drop it under Requests.";
+  $("b-dropall").disabled = s.switching || !C.length;
+  $("b-restart").disabled = s.switching;  // not during a start or a hang: a hang is what it is for
+  const D = s.diag || {};
+  $("b-diag").disabled = !!D.running;
+  $("b-diag").textContent = D.running ? "Collecting… (about 30 s)" : "Capture diagnostics";
+  $("diag-note").hidden = !(D.file || D.error);
+  $("diag-note").innerHTML = D.error ? `<span class="bad">${esc(D.error)}</span>`
+    : D.file ? `Last bundle: <a href="/diag/${esc(D.file)}" download>${esc(D.file)}</a> (also in <code>~/glm-diag</code> on the head)` : "";
+
+  const d = s.download;
+  $("dl-card").hidden = !d;
+  if (d) {
+    $("dl").innerHTML = `<p class="note" style="margin:0 0 10px">${esc(d.what)}: ${esc(d.phase)}</p>` +
+      Object.entries(d.gb).map(([name, gb]) => {
+        const pct = Math.min(100, 100 * gb / d.total_gb);
+        return `<div class="dl-row"><span>${esc(name)}</span><span>${gb.toFixed(0)} / ${d.total_gb} GB</span></div>
+                <div class="bar"><div style="width:${pct.toFixed(1)}%"></div></div>`;
+      }).join("");
+  }
+
+  for (const m of ["normal", "ablit"]) {
+    const ready = (s.weights || {})[m] === "ready";
+    $("w-" + m).textContent = ready ? "Ready" : "Not ready";
+    $("w-" + m).className = "v " + (ready ? "ok" : "warn");
+    const b = $("b-" + m);
+    b.disabled = busy || !ready || (s.serving === m && s.state === "up");
+    b.className = (s.serving !== m && ready && !busy) ? "primary" : "";
+  }
+  if (s.log) { $("logcard").hidden = false; $("log").textContent = s.log; $("log").scrollTop = 1e9; }
+  $("updated").textContent = s.updated ? "Updated " + new Date(s.updated * 1000).toLocaleTimeString() : "";
+}
+
+async function refresh() {
+  try { paint(await (await fetch("/api/status")).json()); }
+  catch { $("pill").textContent = "?"; $("pill").className = "pill down"; $("hero").textContent = "Can't reach the status service on the head Spark"; }
+  clearTimeout(timer); timer = setTimeout(refresh, 2000);  // the status is a cached dict: a few KB each time
+}
+
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-GLM-Switch": "1" },
+    body: JSON.stringify(body) });
+  return r.json();
+}
+
+function said(msg) {  // the last Unstick result, under its buttons
+  $("unstick-msg").hidden = false;
+  $("unstick-msg").textContent = new Date().toLocaleTimeString() + " · " + msg;
+}
+
+async function dropPeer(peer) {
+  const c = (lastState?.connections || []).find(x => x.peer === peer);
+  const n = (lastState?.connections || []).length;
+  if (!confirm(peer === "all" ? `Drop all ${n} connection(s)? Every running request is cancelled; the clients see an error.`
+      : `Drop ${c ? c.client + " (" + peer + ")" : peer}? Its request is cancelled; the client sees an error.`)) return;
+  const j = await post("/api/drop", { peer });
+  said((j.ok ? "" : "Drop failed: ") + j.message);
+  if (!j.ok) alert(j.message);
+  refresh();
+}
+$("conns").addEventListener("click", e => { const b = e.target.closest("button.drop"); if (b) dropPeer(b.dataset.peer); });
+
+async function restart() {
+  let n = 0;
+  try {  // a fresh count: the page's can be 5 s old
+    const L = (await (await fetch("/api/status")).json()).live;
+    n = L ? (L.requests_running || 0) + (L.requests_waiting || 0) : 0;
+  } catch {}
+  if (!confirm(`Restart the model? It stops for about 2–3 minutes` + (n ? ` and ${n} request(s) running or queued are cut off.` : "."))) return;
+  const j = await post("/api/restart", { force: n > 0 });  // the confirm named what it cuts off; more since then and it refuses
+  said(j.message);
+  if (!j.ok || j.message !== "started") alert(j.message);
+  busy = true; refresh();
+}
+
+async function diag() {
+  const j = await post("/api/diag", {});
+  said(j.ok ? "Collecting diagnostics…" : j.message);
+  if (!j.ok) alert(j.message);
+  refresh();
+}
+
+async function go(target) {
+  if (!confirm("Switch to " + NAMES[target] + "? The model stops for about 2–6 minutes.")) return;
+  const r = await fetch("/api/switch", { method: "POST", headers: { "Content-Type": "application/json", "X-GLM-Switch": "1" },
+    body: JSON.stringify({ target, force: $("force").checked }) });
+  const j = await r.json();
+  if (!j.ok || j.message !== "started") alert(j.message);
+  busy = true; refresh();
+}
+refresh();
+</script>
+</body>
+</html>

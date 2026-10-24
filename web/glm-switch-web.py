@@ -4,8 +4,10 @@
 Switching runs ~/bin/glm-switch, so the page and the command behave the same. Two sampler threads gather the
 telemetry in the background, so a page load never waits on ssh: a fast one reads /health and the cable counters every
 second (the meters are means over the last few seconds), a slow one does the rest (ssh, ss, glm-switch) every 5 s.
-  GET  /             the page
+  GET  /             the page (the Spark Performance Dyno design); /classic is the plain page it replaced
+  GET  /static/...   the page's stylesheet, script, fonts and gauge component (web/static)
   GET  /api/status   state, live numbers, all-time totals, each Spark, downloads, the last switch's log (JSON, for other tools too)
+  GET  /api/history  the last 10 minutes of tokens/s and cable MB/s, one sample a second
   POST /api/switch   {"target": "normal" | "ablit", "force": false}
   POST /api/restart  {"force": false}      restart the model on the weights it serves now
   POST /api/drop     {"peer": "ip:port" | "all"}   close a client's connection; the server cancels its request
@@ -79,6 +81,12 @@ PEAK_S = 5  # the all-time peak tokens/s is taken over this long, so a one-secon
 _fast = {"t": None, "h": None, "tps": 0.0, "tps_peak_window": 0.0, "mb_s": None, "prog": None}  # the fast sampler's latest
 _tok = deque(maxlen=PEAK_S + 3)  # (time, completion_tokens_total), one per second
 _mb = deque(maxlen=SMOOTH_S)  # MB/s on the cables, one per second
+HISTORY_S = 600
+_hist = deque(maxlen=HISTORY_S)  # (time, tokens/s, cable MB/s or None), one per second, for the page's trace
+WEBDIR = os.path.dirname(os.path.abspath(__file__))
+STATIC = os.path.join(WEBDIR, "static")
+MIME = {".css": "text/css", ".js": "application/javascript", ".svg": "image/svg+xml", ".ttf": "font/ttf",
+        ".txt": "text/plain; charset=utf-8", ".md": "text/plain; charset=utf-8", ".json": "application/json", ".png": "image/png"}
 _since = {"state": None, "t": None}
 _cable = {"t": None, "bytes": None, "slow_since": None}
 _wake = threading.Event()  # set when the cached state is stale: the sampler re-reads at once
@@ -319,6 +327,7 @@ def sample_fast_forever():
             prog = engine_progress(streams.get("filling", 0), streams.get("decoding", 0), mb_s, now) if ok else None
             _fast.update(t=now, h=h, tps=_window_rate(_tok, SMOOTH_S), tps_peak_window=_window_rate(_tok, PEAK_S, whole=True),
                          mb_s=mb_s, prog=prog)
+            _hist.append((int(now), round(_fast["tps"], 1) if ok else None, None if mb_s is None else round(mb_s)))
             if ok and _cache.get("state") == "up" and _cache.get("live") is not None:
                 _cache["live"] = live_numbers(h)
                 _cache["updated"] = int(now)
@@ -479,12 +488,12 @@ class Handler(BaseHTTPRequestHandler):
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
         return host in ALLOWED_HOSTS
 
-    def _send(self, code, body, ctype="application/json", public=False):
+    def _send(self, code, body, ctype="application/json", public=False, cache=False):
         data = body.encode() if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "max-age=3600" if cache else "no-store")
         if public:
             self.send_header("Access-Control-Allow-Origin", "*")  # read-only status for dashboards elsewhere
         self.end_headers()
@@ -493,14 +502,25 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._host_ok():
             return self._send(421, '{"error": "unknown host"}')
-        if self.path == "/":
-            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "glm-switch-web.html"), "rb") as f:
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/classic"):
+            with open(os.path.join(WEBDIR, "classic.html" if path == "/classic" else "glm-switch-web.html"), "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
-        elif self.path == "/api/status":
+        elif path == "/api/status":
             self._send(200, json.dumps(status()), public=True)
-        elif re.fullmatch(r"/diag/diag-\d{8}-\d{6}\.tar\.gz", self.path):
+        elif path == "/api/history":
+            self._send(200, json.dumps({"seconds": HISTORY_S, "samples": list(_hist)}), public=True)
+        elif path.startswith("/static/"):
+            rel = os.path.normpath(path[len("/static/"):])
+            full = os.path.join(STATIC, rel)
+            ext = os.path.splitext(rel)[1].lower()
+            if rel.startswith(("..", "/")) or ext not in MIME or not os.path.isfile(full):
+                return self._send(404, '{"error": "not found"}')
+            with open(full, "rb") as f:
+                self._send(200, f.read(), MIME[ext], cache=True)
+        elif re.fullmatch(r"/diag/diag-\d{8}-\d{6}\.tar\.gz", path):
             try:
-                with open(os.path.join(DIAG_DIR, self.path.rsplit("/", 1)[1]), "rb") as f:
+                with open(os.path.join(DIAG_DIR, path.rsplit("/", 1)[1]), "rb") as f:
                     self._send(200, f.read(), "application/gzip")
             except OSError:
                 self._send(404, '{"error": "no such bundle"}')

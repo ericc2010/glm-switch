@@ -12,6 +12,8 @@ Both weights serve under the same model name, so clients (Atlas, Hermes, ...) ne
 |---|---|
 | `bin/glm-switch` | The command: `status`, `weights`, `normal`, `ablit`, `restart`, `conns`, `drop`, `diag` |
 | `web/glm-switch-web.py` + `.html` | The web page (port 8891): status, live numbers, every Spark, client connections, downloads, switch and unstick buttons, a timer |
+| `web/static/` | The page's look: the "Spark Performance Dyno" design (theme tokens, SVG gauges, local fonts; see `web/static/CREDITS.md`) |
+| `web/classic.html` | The plain-cards page the Dyno design replaced, still served at `/classic` |
 | `systemd/glm-switch-web.service` | Runs the page at boot (the installer fills in the user and path) |
 | `bin/rootsh` | Runs a command as root through docker, for Sparks where sudo has no password (see below) |
 | `config.example.env` | The cluster's own values: copy it to `~/.config/glm-switch/config.env` |
@@ -81,6 +83,17 @@ The state of a connection comes from the kernel's TCP counters (`ss -i`): a requ
 is newer than the last one seen, and the bytes sent since then say whether a reply is under way. The bytes sent before
 the current request are remembered in `/tmp/glm-switch-conns.state`. A very long prompt legitimately waits for minutes
 (about 2.5k prompt tokens/s on 3 Sparks, less while others decode).
+
+## The page
+
+`http://<head>:8891/` is a one-screen dashboard in the Spark Performance Dyno design: a throughput dial with the
+recorded peak marked, mean GPU and pool-free gauges, the request count and the ring-cable reading with what the engine
+is doing, a ten-minute throughput trace, a card per Spark (click one for details), the client requests with a Drop
+button each, the Normal/Ablit profiles with their switch buttons (Ablit's carries a warning), the Unstick menu
+(diagnostics, drop all, restart, in that order), the last switch's log and the all-time totals. A switch or restart
+shows a timer strip with the step it is on; a stalled engine shows a red strip. Four colour themes under the gear
+(remembered per browser). Everything is served by the head itself, fonts included, so it works with no internet.
+`/classic` is the previous plain page on the same data.
 
 ## How often it looks
 

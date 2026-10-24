@@ -1,0 +1,37 @@
+[
+  {
+    "file": "BarlowCondensed-SemiBold.ttf",
+    "bytes": 109428,
+    "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/barlowcondensed/BarlowCondensed-SemiBold.ttf"
+  },
+  {
+    "file": "Barlow-Regular.ttf",
+    "bytes": 104068,
+    "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/barlow/Barlow-Regular.ttf"
+  },
+  {
+    "file": "Barlow-SemiBold.ttf",
+    "bytes": 108348,
+    "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/barlow/Barlow-SemiBold.ttf"
+  },
+  {
+    "file": "IBMPlexMono-Regular.ttf",
+    "bytes": 135580,
+    "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/ibmplexmono/IBMPlexMono-Regular.ttf"
+  },
+  {
+    "file": "OFL-BarlowCondensed.txt",
+    "bytes": 4377,
+    "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/barlowcondensed/OFL.txt"
+  },
+  {
+    "file": "OFL-Barlow.txt",
+    "bytes": 4377,
+    "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/barlow/OFL.txt"
+  },
+  {
+    "file": "OFL-IBMPlexMono.txt",
+    "bytes": 4456,
+    "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/ibmplexmono/OFL.txt"
+  }
+]

@@ -1,0 +1,115 @@
+/* SPARK PERFORMANCE DYNO · v1.0
+ * Canonical theme: carbon-lime. Optional themes require data-theme on an ancestor.
+ * Status meaning is independent of accent color. See docs/06-assets.md.
+ */
+:root,
+[data-theme="carbon-lime"] {
+  color-scheme: dark;
+  --bg: #0B0F12;
+  --surface: #151B21;
+  --surface-alt: #1D252D;
+  --border: #34414D;
+  --border-strong: #657583;
+  --text: #F1F5F8;
+  --text-muted: #A4B1BC;
+  --accent: #B0FF43;
+  --accent-soft: rgba(176, 255, 67, 0.11);
+  --on-accent: #0B0F12;
+  --success: #58D6A8;
+  --warning: #FFD166;
+  --warning-soft: rgba(255, 209, 102, 0.12);
+  --on-warning: #0B0F12;
+  --danger: #FF7B87;
+  --track: #36444F;
+  --font-ui: "Barlow", "Segoe UI", Arial, sans-serif;
+  --font-display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --shadow-panel: 0 10px 32px rgba(0, 0, 0, 0.16);
+  --duration-fast: 120ms;
+  --duration-standard: 180ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+[data-theme="carbon-orange"] {
+  color-scheme: dark;
+  --bg: #0B0F12;
+  --surface: #151B21;
+  --surface-alt: #1D252D;
+  --border: #34414D;
+  --border-strong: #657583;
+  --text: #F1F5F8;
+  --text-muted: #A4B1BC;
+  --accent: #FF8A3D;
+  --accent-soft: rgba(255, 138, 61, 0.12);
+  --on-accent: #0B0F12;
+  --success: #58D6A8;
+  --warning: #FFD166;
+  --warning-soft: rgba(255, 209, 102, 0.12);
+  --on-warning: #0B0F12;
+  --danger: #FF7B87;
+  --track: #36444F;
+}
+
+[data-theme="midnight-ice"] {
+  color-scheme: dark;
+  --bg: #07131F;
+  --surface: #0F2233;
+  --surface-alt: #163046;
+  --border: #344D63;
+  --border-strong: #6A8296;
+  --text: #EAF5FB;
+  --text-muted: #A4BBCB;
+  --accent: #70D9F5;
+  --accent-soft: rgba(112, 217, 245, 0.11);
+  --on-accent: #07131F;
+  --success: #78D6A5;
+  --warning: #F8C86A;
+  --warning-soft: rgba(248, 200, 106, 0.12);
+  --on-warning: #07131F;
+  --danger: #FF8596;
+  --track: #2A465B;
+}
+
+[data-theme="ivory-crimson"] {
+  color-scheme: light;
+  --bg: #F6F4EF;
+  --surface: #FFFFFF;
+  --surface-alt: #EEEAE2;
+  --border: #C7C6C0;
+  --border-strong: #7E858B;
+  --text: #20252B;
+  --text-muted: #5C6470;
+  --accent: #A9213B;
+  --accent-soft: rgba(169, 33, 59, 0.08);
+  --on-accent: #FFFFFF;
+  --success: #08735B;
+  --warning: #7A5B00;
+  --warning-soft: rgba(179, 130, 0, 0.10);
+  --on-warning: #FFFFFF;
+  --danger: #B33C0A;
+  --track: #D1D6D7;
+  --shadow-panel: 0 10px 32px rgba(32, 37, 43, 0.06);
+}
+
+/* Use these classes when a host does not provide its own focus/reduced-motion rules. */
+.dyno-focusable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-standard: 0ms;
+  }
+}
