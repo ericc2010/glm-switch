@@ -1,10 +1,17 @@
-# glm-switch
+# glm-switch · Spark Performance Dyno
 
 Switch a [TensorFold GLM-5.3](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold) cluster of
 DGX Sparks between the **normal** weights and the **Ablit** weights (`ABLIT=0` / `ABLIT=1`), from a command or a web page,
-and watch the cluster while it runs.
+and watch the cluster while it runs: tokens/s, GPU, memory pool, the ring cables, every client request, and an
+all-time tally.
+
+![The Spark Performance Dyno page](docs/screenshot.png)
 
 Both weights serve under the same model name, so clients (Atlas, Hermes, ...) need no change when you switch.
+
+Built and used on a 3-Spark cluster (TP=3) with TensorFold 0.6; the recipe's 2-Spark setup works the same, with one worker
+in the config. It reads only TensorFold's `/health`, the kernel's socket counters and sysfs, so it needs nothing installed
+beyond Python 3 and ssh. MIT licensed (fonts under the SIL OFL, see `web/static/fonts/`).
 
 ## What's in it
 
@@ -44,7 +51,7 @@ glm-switch weights           # which weights are complete on every Spark
 glm-switch ablit             # switch to Ablit (refuses while requests run)
 glm-switch normal --force    # switch even if requests are running (they are cut off)
 glm-switch conns             # the clients connected to the model: streaming, waiting for a reply, or idle
-glm-switch drop 10.2.2.16:59466   # close one client's connection: the server cancels that request only
+glm-switch drop 192.0.2.16:59466  # close one client's connection: the server cancels that request only
 glm-switch drop all          # free every slot without reloading the model
 glm-switch restart --force   # reload the weights now serving (2–3 min, every request is cut off)
 glm-switch diag              # save metrics, connections and every Spark's logs to ~/glm-diag/diag-<time>.tar.gz

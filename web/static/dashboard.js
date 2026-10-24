@@ -29,6 +29,10 @@
     return h ? `${h} h ${m} min` : m ? `${m} min ${sec} s` : `${sec} s`;
   }
   const upfor = s => valid(s) ? `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m` : '—';
+  const WORDS = { 1: 'one', 2: 'two', 3: 'three', 4: 'four' };
+  const nSparks = () => ((S && S.nodes) || []).length;
+  const allSparks = () => { const n = nSparks(); return n ? `all ${WORDS[n] || n} Sparks` : 'every Spark'; };
+  const theSparks = () => { const n = nSparks(); return n ? `the ${WORDS[n] || n} Sparks` : 'the Sparks'; };
   function compact(n) {  // 1,234 · 56 k · 73.9 M · 1.20 B, with the exact figure in the title
     if (!valid(n)) return '—';
     const f = n >= 1e9 ? [(n / 1e9).toFixed(2), 'B'] : n >= 1e6 ? [(n / 1e6).toFixed(1), 'M'] : n >= 1e4 ? [(n / 1e3).toFixed(0), 'k'] : [num(n), ''];
@@ -80,7 +84,7 @@
     const has = re => l.find(x => re.test(x));
     if (has(/going back to/)) return 'The new model did not start — going back to the previous one';
     if (has(/up after/)) return 'Model is up — sending a test question';
-    if (has(/starting it/)) return 'Loading the model on all three Sparks' + (has(/waiting\.\.\./) ? '' : '…');
+    if (has(/starting it/)) return `Loading the model on ${allSparks()}` + (has(/waiting\.\.\./) ? '' : '…');
     if (has(/stopping the cluster/)) return 'Stopping the current model';
     return 'Checking that everything is ready';
   }
@@ -94,9 +98,10 @@
     const tone = online === nodes.length && nodes.length ? 'success' : online ? 'warning' : 'danger';
     $('cluster-status').className = 'cluster-status status-tone-' + tone;
     $('cluster-status').querySelector('.status-text').textContent = `${online} / ${nodes.length || '—'} Sparks online`;
+    if (nodes.length) $('brand-count').textContent = `${WORDS[nodes.length] || nodes.length} DGX Sparks`;
     const hero = {
       up: `<b>${model} model is answering</b> for ${dur(s.state_seconds)}`,
-      starting: `<b>Loading the model on all three Sparks</b> for ${dur(s.state_seconds)} (usually 2–6 min)`,
+      starting: `<b>Loading the model on ${allSparks()}</b> for ${dur(s.state_seconds)} (usually 2–6 min)`,
       switching: restarting ? `<b>Restarting the ${model} model</b>` : `<b>Switching to ${NAMES[s.configured] || s.configured}</b>`,
       down: '<b>The model is stopped</b>',
       failed: '<b>The model failed to start</b>; it retries every minute (see the last switch log, or journalctl -u glm53)',
@@ -219,7 +224,7 @@
       const action = active ? '<span class="model-action-caption">Current profile · answering</span>'
         : `<button type="button" class="model-switch ${ablit ? 'warning-switch' : ''}" data-model="${m}" ${canSwitch ? '' : 'disabled'} title="Switch to ${NAMES[m]}">${ablit ? WARN + '<span class="sr-only">Warning: </span>' : ''}<span class="model-switch-label">Switch to ${NAMES[m]}</span></button>`;
       return `<div class="model-card${active ? ' is-active' : ''}"><div class="model-title"><span class="model-selector" aria-hidden="true"></span><span class="model-name">${NAMES[m]}</span><span class="activity-badge">${active ? 'Active' : s.serving === m ? STATE[s.state] || s.state : 'Standby'}</span></div>
-        <span class="model-readiness">${ready ? '<span class="ready-word">Ready</span> on all three Sparks' : '<span class="notready-word">Not ready</span> · weights incomplete'}</span>${action}</div>`;
+        <span class="model-readiness">${ready ? `<span class="ready-word">Ready</span> on ${allSparks()}` : '<span class="notready-word">Not ready</span> · weights incomplete'}</span>${action}</div>`;
     }).join('');
     $('menu-drop').disabled = s.switching || !(s.connections || []).length;
     $('menu-restart').disabled = !!s.switching;  // not during a start or a hang: a hang is what it is for
@@ -341,13 +346,13 @@
   }
   function showInterconnect() {
     const L = S && S.live, G = L && L.progress;
-    openDialog({ eyebrow: 'Interconnect', title: 'The ring cables', description: 'What the engine moves between the three Sparks over the CX7 cables (RDMA), read from the InfiniBand counters once a second and averaged over 4 s.',
+    openDialog({ eyebrow: 'Interconnect', title: 'The ring cables', description: `What the engine moves between ${theSparks()} over the CX7 cables (RDMA), read from the InfiniBand counters once a second and averaged over 4 s.`,
       body: rows([['Now', L && L.cable_mb_s != null ? (L.cable_mb_s >= 1000 ? (L.cable_mb_s / 1000).toFixed(2) + ' GB/s' : L.cable_mb_s + ' MB/s') : '—'], ['Engine', G ? G.state : '—'], ['Streams filling / decoding', G ? `${G.filling} / ${G.decoding}` : '—'], ['Stalled for', G && G.stalled_s ? G.stalled_s + ' s' : '—']])
         + '<div class="detail-note"><strong>Idle:</strong> 0 · <strong>a reply being written:</strong> about 0.5 GB/s (one or two at once) · <strong>a prompt being read:</strong> about 2.3 GB/s · <strong>prompt plus replies:</strong> 1.8–1.9 GB/s.</div><div class="detail-note">This is how the page tells a long prompt from a hang: a prompt loading keeps the cables busy, a stalled engine shows nothing moving for 30 s while it still holds work.</div>' });
   }
   function showRequestHelp() {
     openDialog({ eyebrow: 'Requests', title: 'What the states mean', description: 'Every client connection to the model server, from the kernel\'s TCP counters.',
-      body: '<div class="detail-note"><strong>Streaming:</strong> reply bytes are flowing to the client.</div><div class="detail-note"><strong>Waiting for reply:</strong> nothing but headers sent yet — the prompt is being read (<em>prompt loading</em>, about 2.5k tokens/s on three Sparks, so a 300k-token prompt takes two minutes), it is queued, or it is a non-streaming request still being answered. <em>Engine stalled</em> means nothing has moved over the cables for 30 s with work held.</div><div class="detail-note"><strong>Reply paused:</strong> a reply of over 4 KB that has not moved for 3 s. The server closes a chat connection when its reply ends, so an open one is still being answered; a pause while another prompt loads is normal.</div><div class="detail-note"><strong>Client gone:</strong> the client hung up but its request still holds a lane.</div><div class="detail-note"><strong>Idle:</strong> a connection with no request on it, like a health poller.</div><div class="detail-note"><strong>Drop</strong> closes that connection from the head; the server cancels its request within seconds and the others keep going. The client sees an error and may send it again.</div>' });
+      body: '<div class="detail-note"><strong>Streaming:</strong> reply bytes are flowing to the client.</div><div class="detail-note"><strong>Waiting for reply:</strong> nothing but headers sent yet — the prompt is being read (<em>prompt loading</em>, about 2.5k tokens/s on three Sparks, so a 300k-token prompt takes about two minutes), it is queued, or it is a non-streaming request still being answered. <em>Engine stalled</em> means nothing has moved over the cables for 30 s with work held.</div><div class="detail-note"><strong>Reply paused:</strong> a reply of over 4 KB that has not moved for 3 s. The server closes a chat connection when its reply ends, so an open one is still being answered; a pause while another prompt loads is normal.</div><div class="detail-note"><strong>Client gone:</strong> the client hung up but its request still holds a lane.</div><div class="detail-note"><strong>Idle:</strong> a connection with no request on it, like a health poller.</div><div class="detail-note"><strong>Drop</strong> closes that connection from the head; the server cancels its request within seconds and the others keep going. The client sees an error and may send it again.</div>' });
   }
 
   async function dropPeer(peer) {
@@ -369,7 +374,7 @@
       n = L ? (L.requests_running || 0) + (L.requests_waiting || 0) : 0;
     } catch {}
     const ok = await confirmDialog({ eyebrow: 'Unstick · step 03', tone: 'danger', title: 'Restart the model?', confirm: 'Restart model',
-      description: `The same weights are reloaded on all three Sparks: about 2–3 minutes with no model, Atlas uses the cloud meanwhile.` + (n ? ` <strong>${n} request(s) running or queued are cut off.</strong>` : ' No request is running right now.'),
+      description: `The same weights are reloaded on ${allSparks()}: about 2–3 minutes with no model; clients get connection errors meanwhile.` + (n ? ` <strong>${n} request(s) running or queued are cut off.</strong>` : ' No request is running right now.'),
       body: '<div class="detail-note">Only for a real hang: a dropped request that still counts as running after 30 s, or the API not answering. Capture diagnostics first if you have not.</div>' });
     if (!ok) return;
     const j = await post('/api/restart', { force: n > 0 });  // the confirm named what it cuts off; more since then and it refuses
@@ -387,7 +392,7 @@
     const ablit = target === 'ablit';
     const ok = await confirmDialog({ eyebrow: ablit ? 'Warning · model change' : 'Model change', tone: ablit ? 'warning' : '', kind: ablit ? 'warning' : 'primary',
       title: `Switch to ${NAMES[target]}?`, confirm: `Switch to ${NAMES[target]}`,
-      description: 'The model stops for about 2–6 minutes while the other weights load on all three Sparks; Atlas uses the cloud meanwhile. Both profiles answer to the same name, so nothing else changes. If the new one fails to start, it goes back by itself.',
+      description: `The model stops for about 2–6 minutes while the other weights load on ${allSparks()}; clients get connection errors meanwhile. Both profiles answer to the same name, so nothing else changes. If the new one fails to start, it goes back by itself.`,
       body: (ablit ? `<div class="model-warning-note">${WARN}<p><strong>Ablit is the modified weights.</strong> Make sure that is what you want serving before confirming.</p></div>` : '')
         + ($('force').checked ? '<div class="detail-note"><strong>Running requests will be cut off</strong> (the box under the profiles is ticked).</div>' : '<div class="detail-note">If requests are running the switch refuses; tick the box under the profiles to cut them off.</div>') });
     if (!ok) return;

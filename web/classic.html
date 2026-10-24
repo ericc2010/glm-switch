@@ -103,7 +103,7 @@
   <header class="top">
     <div>
       <h1>GLM cluster</h1>
-      <p class="sub">GLM-5.3 on three DGX Sparks: status, live numbers and the model switch.</p>
+      <p class="sub">GLM-5.3 on DGX Sparks: status, live numbers and the model switch.</p>
     </div>
     <p class="updated" id="updated"></p>
   </header>
@@ -267,7 +267,7 @@ function stepOf(log) {  // the switch's current step, from its log
   if (has(/up after/)) return "Model is up — sending a test question";
   if (has(/starting it/)) {
     const w = has(/waiting\.\.\./);
-    return "Loading the model on all three Sparks" + (w ? "" : "…");
+    return "Loading the model on every Spark" + (w ? "" : "…");
   }
   if (has(/stopping the cluster/)) return "Stopping the current model";
   return "Checking that everything is ready";
@@ -314,7 +314,7 @@ function paint(s) {
   const model = NAMES[s.serving] || s.serving;
   const hero = {
     up: `${model} model is answering`,
-    starting: "Loading the model on all three Sparks",
+    starting: "Loading the model on every Spark",
     switching: restarting ? `Restarting the ${model} model` : `Switching to ${NAMES[s.configured] || s.configured}`,
     down: "The model is stopped",
     failed: "The model failed to start; it retries every minute (see the last switch below, or journalctl -u glm53)",
