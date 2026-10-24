@@ -82,6 +82,13 @@ is newer than the last one seen, and the bytes sent since then say whether a rep
 the current request are remembered in `/tmp/glm-switch-conns.state`. A very long prompt legitimately waits for minutes
 (about 2.5k prompt tokens/s on 3 Sparks, less while others decode).
 
+## How often it looks
+
+A fast sampler reads `/health` and the ring cables' counters every second (one GET to localhost and four sysfs
+files); tokens/s and the cable rate shown are means over the last 4 s. A slow sampler does the rest (`ss`, ssh to the
+workers, `glm-switch status`) every 5 s, the Spark rows every 15 s. The page fetches the cached status every 2 s and
+glides the meters between readings.
+
 ## All-time totals
 
 The model server's counters start over at every restart, so the page keeps their sum: requests, prompt tokens and

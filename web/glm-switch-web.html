@@ -285,6 +285,24 @@ const compact = n => n == null ? "–" : n >= 1e9 ? (n / 1e9).toFixed(2) + " B" 
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 function big(id, n) { $(id).textContent = compact(n); $(id).title = n == null ? "" : num(n); }
 
+// the meters glide to each new reading over ~0.9 s instead of stepping, so a 2 s poll of 1 s samples reads smoothly
+const glide = {};
+function glideTo(id, v, fmt) {
+  if (v == null) { delete glide[id]; $(id).textContent = "–"; return; }
+  const g = glide[id] || (glide[id] = { cur: v });
+  Object.assign(g, { from: g.cur, to: v, t0: performance.now(), fmt, done: false });
+}
+setInterval(() => {
+  const now = performance.now();
+  for (const [id, g] of Object.entries(glide)) {
+    if (g.done) continue;
+    const p = Math.min(1, (now - g.t0) / 900);
+    g.cur = g.from + (g.to - g.from) * (1 - Math.pow(1 - p, 3));
+    g.done = p >= 1;
+    $(id).textContent = g.fmt(g.cur);
+  }
+}, 50);
+
 function paint(s) {
   if (!s.state) { $("hero").textContent = s.error ? "Status error: " + s.error : "Collecting the first reading…"; return; }
   busy = s.switching || s.state === "starting";
@@ -326,13 +344,14 @@ function paint(s) {
   }
 
   const L = s.live;
-  $("tps").textContent = L ? L.tokens_per_s.toFixed(1) : "–";
+  glideTo("tps", L ? L.tokens_per_s : null, v => v.toFixed(1));
+  $("tps").title = L && L.smooth_s ? `mean over the last ${L.smooth_s} s` : "";
   $("active").textContent = L ? `${L.requests_running} / ${L.max_at_once}` : "–";
   big("served", L ? L.requests_served : null);
   $("pool").textContent = L ? L.pool_free_pct + "%" : "–";
   const G = L && L.progress;
   const mb = L && L.cable_mb_s;
-  $("cable").textContent = mb == null ? "–" : mb >= 1000 ? (mb / 1000).toFixed(1) + " GB/s" : mb + " MB/s";
+  glideTo("cable", mb, v => v >= 1000 ? (v / 1000).toFixed(1) + " GB/s" : Math.round(v) + " MB/s");
   $("cable").className = "v " + (G && G.state === "stalled" ? "bad" : "");
   $("cable-k").textContent = "on the cables" + (!G ? "" : G.state === "loading" ? " · a prompt is loading" : G.state === "decoding" ? " · answering"
     : G.state === "stalled" ? ` · NOTHING MOVING for ${G.stalled_s} s` : " · quiet");
@@ -413,7 +432,7 @@ function paint(s) {
 async function refresh() {
   try { paint(await (await fetch("/api/status")).json()); }
   catch { $("pill").textContent = "?"; $("pill").className = "pill down"; $("hero").textContent = "Can't reach the status service on the head Spark"; }
-  clearTimeout(timer); timer = setTimeout(refresh, busy ? 3000 : 5000);
+  clearTimeout(timer); timer = setTimeout(refresh, 2000);  // the status is a cached dict: a few KB each time
 }
 
 async function post(path, body) {

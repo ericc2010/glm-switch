@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """glm-switch-web: a small web page on the head Spark to watch the GLM-5.3 cluster and switch its weights.
 
-Switching runs ~/bin/glm-switch, so the page and the command behave the same. A sampler thread gathers the
-telemetry in the background, so a page load never waits on ssh.
+Switching runs ~/bin/glm-switch, so the page and the command behave the same. Two sampler threads gather the
+telemetry in the background, so a page load never waits on ssh: a fast one reads /health and the cable counters every
+second (the meters are means over the last few seconds), a slow one does the rest (ssh, ss, glm-switch) every 5 s.
   GET  /             the page
   GET  /api/status   state, live numbers, all-time totals, each Spark, downloads, the last switch's log (JSON, for other tools too)
   POST /api/switch   {"target": "normal" | "ablit", "force": false}
@@ -20,6 +21,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -72,7 +74,11 @@ _totals = {"since": None, "requests": 0, "prompt_tokens": 0, "completion_tokens"
 _child = {"proc": None}
 _lock = threading.Lock()
 _cache = {}
-_rate = {"t": None, "tokens": None, "tps": 0.0}
+SMOOTH_S = 4  # tokens/s and the cable rate shown are means over about this many seconds of 1 s samples
+PEAK_S = 5  # the all-time peak tokens/s is taken over this long, so a one-second blip cannot set it
+_fast = {"t": None, "h": None, "tps": 0.0, "tps_peak_window": 0.0, "mb_s": None, "prog": None}  # the fast sampler's latest
+_tok = deque(maxlen=PEAK_S + 3)  # (time, completion_tokens_total), one per second
+_mb = deque(maxlen=SMOOTH_S)  # MB/s on the cables, one per second
 _since = {"state": None, "t": None}
 _cable = {"t": None, "bytes": None, "slow_since": None}
 _wake = threading.Event()  # set when the cached state is stale: the sampler re-reads at once
@@ -224,9 +230,9 @@ def add_totals(h, now):
     little when a reply is cancelled: a dip without a restart adds nothing."""
     cur = {k: int(h.get(src) or 0) for k, src in TOTAL_KEYS.items()}
     last = _totals["last"]
-    peak = _rate["tps"] > _totals["peak_tps"]
+    peak = _fast["tps_peak_window"] > _totals["peak_tps"]
     if peak:
-        _totals.update(peak_tps=round(_rate["tps"], 1), peak_tps_t=now)
+        _totals.update(peak_tps=round(_fast["tps_peak_window"], 1), peak_tps_t=now)
     if last is None:  # first reading ever: the running server's count so far is the start
         _totals.update(cur, since=now)
     else:
@@ -261,6 +267,66 @@ def _service_age():
         return 0.0
 
 
+def _window_rate(samples, span, whole=False):
+    """Per-second rate between the newest sample and the oldest one within span seconds of it. With whole, 0 unless
+    the samples really cover the span (a peak must not come from a short window)."""
+    if not samples:
+        return 0.0
+    t1, v1 = samples[-1]
+    t0, v0 = next(((t, v) for t, v in samples if t1 - t <= span + 0.5), (t1, v1))
+    if t1 <= t0 or (whole and t1 - t0 < span - 0.5):
+        return 0.0
+    return (v1 - v0) / (t1 - t0)
+
+
+def live_numbers(h):
+    """The Live card's figures, from the fast sampler's latest /health reading and its rolling means."""
+    streams = h.get("streams", {})
+    return {
+        "tokens_per_s": round(_fast["tps"], 1),
+        "requests_running": h.get("requests_running", 0),
+        "requests_waiting": h.get("requests_waiting", 0),
+        "decoding": streams.get("decoding", 0), "prefilling": streams.get("prefilling", 0),
+        "max_at_once": streams.get("max"),
+        "requests_served": h.get("requests_total", 0),
+        "tokens_generated": h.get("completion_tokens_total", 0),
+        "pool_free_pct": round(100 * h.get("pool_free_tokens", 0) / max(1, h.get("pool_tokens", 1))),
+        "cable_mb_s": None if _fast["mb_s"] is None else round(_fast["mb_s"]),
+        "progress": _fast["prog"], "smooth_s": SMOOTH_S,
+    }
+
+
+def sample_fast_forever():
+    """Every second: /health (one GET to localhost) and the cable counters (four sysfs files). Keeps the last few
+    seconds of both for the rolling means, and refreshes the Live figures in the cache while the model is up."""
+    while True:
+        now = time.time()
+        try:
+            h = health()
+            ok = bool(h and h.get("ok"))
+            tok = h.get("completion_tokens_total", 0) if ok else None
+            if tok is None or (_tok and tok < _tok[-1][1]):
+                _tok.clear()  # the server is down, or its counter started over with it
+            if tok is not None:
+                _tok.append((now, tok))
+            mb = cable_sample(now)
+            if mb is None:
+                _mb.clear()
+            else:
+                _mb.append(mb)
+            mb_s = sum(_mb) / len(_mb) if _mb else None
+            streams = (h or {}).get("streams", {})
+            prog = engine_progress(streams.get("filling", 0), streams.get("decoding", 0), mb_s, now) if ok else None
+            _fast.update(t=now, h=h, tps=_window_rate(_tok, SMOOTH_S), tps_peak_window=_window_rate(_tok, PEAK_S, whole=True),
+                         mb_s=mb_s, prog=prog)
+            if ok and _cache.get("state") == "up" and _cache.get("live") is not None:
+                _cache["live"] = live_numbers(h)
+                _cache["updated"] = int(now)
+        except Exception as e:
+            _cache["error"] = str(e)
+        time.sleep(max(0.2, 1.0 - (time.time() - now)))
+
+
 def sample_forever():
     weights, weights_t, nodes, nodes_t = {}, 0.0, [], 0.0
     while True:
@@ -269,19 +335,12 @@ def sample_forever():
             st = kv(sh([TOOL, "status"], 60)[1])
             if now - weights_t > 60 or not weights:
                 weights, weights_t = kv(sh([TOOL, "weights"], 60)[1]), now
-            h = health()
+            # the fast sampler's reading, unless it is stale (a hanging /health) or has not happened yet
+            h = _fast["h"] if _fast["t"] and now - _fast["t"] < 5 else health()
             svc = systemd("glm53", "ActiveState")
             sub = systemd("glm53", "SubState")
             if h and h.get("ok"):
-                tok = h.get("completion_tokens_total", 0)
-                if _rate["tokens"] is not None and tok >= _rate["tokens"] and now > _rate["t"]:
-                    _rate["tps"] = (tok - _rate["tokens"]) / (now - _rate["t"])
-                else:
-                    _rate["tps"] = 0.0  # first reading, or the counter restarted with the server
-                _rate.update(t=now, tokens=tok)
                 add_totals(h, now)
-            else:
-                _rate.update(t=None, tokens=None, tps=0.0)
             # a crashed start sits in auto-restart (systemd shows it as activating) until its next try
             if switching():
                 state = "switching"
@@ -306,11 +365,9 @@ def sample_forever():
                 with ThreadPoolExecutor(3) as ex:
                     nodes = list(ex.map(node_info, NODES))
                 nodes_t = now
-            streams = (h or {}).get("streams", {})
             conns = connections() if svc == "active" else []
             held = (h.get("requests_running", 0) + h.get("requests_waiting", 0)) if h and h.get("ok") else 0
-            mb_s = cable_sample(now)
-            prog = engine_progress(streams.get("filling", 0), streams.get("decoding", 0), mb_s, now) if h and h.get("ok") else None
+            prog = _fast["prog"] if h and h.get("ok") else None
             for c in conns:  # the cables say whether a waiting request's prompt is being read, or nothing moves
                 if c["state"] == "waiting" and prog and prog["state"] in ("stalled", "loading"):
                     c["note"] = prog["state"]
@@ -319,18 +376,7 @@ def sample_forever():
                 "state": state, "state_seconds": secs, "service": svc,
                 "serving": st.get("serving", "unknown"), "configured": st.get("configured", "unknown"),
                 "weights": weights, "switching": switching(),
-                "live": None if not (h and h.get("ok")) else {
-                    "tokens_per_s": round(_rate["tps"], 1),
-                    "requests_running": h.get("requests_running", 0),
-                    "requests_waiting": h.get("requests_waiting", 0),
-                    "decoding": streams.get("decoding", 0), "prefilling": streams.get("prefilling", 0),
-                    "max_at_once": streams.get("max"),
-                    "requests_served": h.get("requests_total", 0),
-                    "tokens_generated": h.get("completion_tokens_total", 0),
-                    "pool_free_pct": round(100 * h.get("pool_free_tokens", 0) / max(1, h.get("pool_tokens", 1))),
-                    "cable_mb_s": None if mb_s is None else round(mb_s),
-                    "progress": prog,
-                },
+                "live": live_numbers(h) if h and h.get("ok") else None,
                 "totals": {k: _totals[k] for k in ("since", "requests", "prompt_tokens", "completion_tokens", "peak_tps", "peak_tps_t")},
                 "nodes": nodes, "download": downloads(), "updated": int(now), "error": None,
                 "connections": conns, "stuck_after_s": STUCK_S,
@@ -498,5 +544,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     load_totals()
+    threading.Thread(target=sample_fast_forever, daemon=True).start()
     threading.Thread(target=sample_forever, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
