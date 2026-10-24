@@ -54,8 +54,11 @@ glm-switch diag              # save metrics, connections and every Spark's logs 
 
 The page's **Requests** card lists every client connection. *Waiting for reply* means nothing but the HTTP headers has
 been sent back yet: the request is in its prompt (prefill), queued, or a non-streaming request still being answered;
-one waiting over 2 minutes is flagged. *Client gone* means the client hung up but the server has not noticed yet.
-A count of requests the server holds beyond the listed connections is shown too (the client is gone, or the request
+one waiting over 2 minutes is flagged. *Reply paused* is a reply of over 4 KB that has not moved for 3 s; the
+server closes a chat connection when its reply ends, so an open one is still being answered (a pause while another
+prompt loads is normal). *Client gone* means the client hung up but the server has not noticed yet.
+A count of requests the server holds beyond the listed connections is shown too, once it has lasted two readings,
+since a request that ends between the count and the connection scan is not one (the client is gone, or the request
 came from the head itself). The **Unstick** card goes from least to most disruptive:
 
 1. **Drop** (one request) or **Drop all**: closes the connection(s) from the head (`ss -K`, as root). TensorFold checks

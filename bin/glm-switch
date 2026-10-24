@@ -4,7 +4,7 @@
 #   glm-switch weights           which weights are complete on all three Sparks
 #   glm-switch normal|ablit      switch (refuses while requests are running; --force to switch anyway)
 #   glm-switch restart           restart the model on the weights it serves now (refuses while requests run; --force)
-#   glm-switch conns [--tsv]     the clients connected to the model server: streaming, waiting for a reply, or idle
+#   glm-switch conns [--tsv]     the clients connected to the model server: streaming, waiting for a reply, paused, gone or idle
 #   glm-switch drop PEER|all     close a client's connection (ip:port from conns): the server cancels its request
 #   glm-switch diag              save a diagnostics bundle (metrics, connections, logs of every Spark) in ~/glm-diag
 # Flags: --force, --no-rollback, --tsv
@@ -66,8 +66,10 @@ cable_mb_s() {  # over $1 seconds; nothing without the counters
 
 conns() {  # one tab-separated line per client: peer, state, seconds since its request, bytes sent for it
   # waiting: received a request and sent at most the headers since (no reply yet: prefill, queued, or a non-streaming
-  # reply). streaming: sent data in the last 3 s. gone: the client closed, the server has not yet (its request still
-  # holds a slot until the server notices). idle: a kept connection between requests. The bytes sent for the current
+  # reply). streaming: sent data in the last 3 s. paused: a reply of over 4 KB that has not moved for 3 s (the server
+  # closes a chat connection when its reply ends, so an open one is still being answered). gone: the client closed,
+  # the server has not yet (its request still holds a slot until the server notices). idle: a kept connection between
+  # requests, like a health poller's. The bytes sent for the current
   # request need the bytes sent before it on the same connection: kept in $CONN_STATE between calls.
   local now raw
   now=$(date +%s%3N)
@@ -93,6 +95,7 @@ conns() {  # one tab-separated line per client: peer, state, seconds since its r
       else if (rcvd == 0) st = "idle"                          # connected, nothing asked yet
       else if (since <= 500) st = "waiting"
       else if (snd < s) st = "streaming"
+      else if (since > 4096) st = "paused"                     # a reply that stopped flowing; the server closes a finished one
       else st = "idle"
       printf "%s\t%s\t%d\t%d\n", peer, st, rcv / 1000, since
       printf "%s\t%d\t%d\t%d\n", peer, b, base0, sent > (statefile ".tmp") }

@@ -186,7 +186,7 @@
     }).join('') : '<div class="empty-nodes"><h3>No Spark readings yet</h3><p>The first reading takes a few seconds.</p></div>';
   }
 
-  const RSTATE = { streaming: ['Streaming', 'success'], waiting: ['Waiting for reply', 'warning'], gone: ['Client gone', 'warning'], idle: ['Idle', 'muted'] };
+  const RSTATE = { streaming: ['Streaming', 'success'], waiting: ['Waiting for reply', 'warning'], paused: ['Reply paused', 'warning'], gone: ['Client gone', 'warning'], idle: ['Idle', 'muted'] };
   function renderRequests(s) {
     const C = s.connections || [];
     const held = C.filter(c => c.state !== 'idle').length;
@@ -202,7 +202,7 @@
     }).join('') : '<div class="request-empty"><strong>No clients connected</strong><p>Requests appear here the moment a client connects; each one can be dropped on its own.</p></div>';
     const U = s.unmatched_requests || 0;
     $('unmatched-strip').hidden = !U;
-    $('unmatched-text').innerHTML = `<strong>${U} request(s) running with no connection listed</strong> — the client hung up, or it was sent from the head itself. Drop all cannot reach it; if it never ends, restart the model.`;
+    $('unmatched-text').innerHTML = `<strong>${U} request(s) running with no connection listed for ${dur(s.unmatched_for_s)}</strong> — the client hung up, or it was sent from the head itself. Drop all cannot reach it; if it never ends, restart the model.`;
     const G = s.live && s.live.progress;
     const stuck = C.filter(c => c.stuck);
     $('stall-strip').hidden = !stuck.length && !(G && G.state === 'stalled');
@@ -347,7 +347,7 @@
   }
   function showRequestHelp() {
     openDialog({ eyebrow: 'Requests', title: 'What the states mean', description: 'Every client connection to the model server, from the kernel\'s TCP counters.',
-      body: '<div class="detail-note"><strong>Streaming:</strong> reply bytes are flowing to the client.</div><div class="detail-note"><strong>Waiting for reply:</strong> nothing but headers sent yet — the prompt is being read (<em>prompt loading</em>, about 2.5k tokens/s on three Sparks, so a 300k-token prompt takes two minutes), it is queued, or it is a non-streaming request still being answered. <em>Engine stalled</em> means nothing has moved over the cables for 30 s with work held.</div><div class="detail-note"><strong>Client gone:</strong> the client hung up but its request still holds a lane.</div><div class="detail-note"><strong>Idle:</strong> a connection with no request on it, like a health poller.</div><div class="detail-note"><strong>Drop</strong> closes that connection from the head; the server cancels its request within seconds and the others keep going. The client sees an error and may send it again.</div>' });
+      body: '<div class="detail-note"><strong>Streaming:</strong> reply bytes are flowing to the client.</div><div class="detail-note"><strong>Waiting for reply:</strong> nothing but headers sent yet — the prompt is being read (<em>prompt loading</em>, about 2.5k tokens/s on three Sparks, so a 300k-token prompt takes two minutes), it is queued, or it is a non-streaming request still being answered. <em>Engine stalled</em> means nothing has moved over the cables for 30 s with work held.</div><div class="detail-note"><strong>Reply paused:</strong> a reply of over 4 KB that has not moved for 3 s. The server closes a chat connection when its reply ends, so an open one is still being answered; a pause while another prompt loads is normal.</div><div class="detail-note"><strong>Client gone:</strong> the client hung up but its request still holds a lane.</div><div class="detail-note"><strong>Idle:</strong> a connection with no request on it, like a health poller.</div><div class="detail-note"><strong>Drop</strong> closes that connection from the head; the server cancels its request within seconds and the others keep going. The client sees an error and may send it again.</div>' });
   }
 
   async function dropPeer(peer) {

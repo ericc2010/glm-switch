@@ -88,6 +88,7 @@ STATIC = os.path.join(WEBDIR, "static")
 MIME = {".css": "text/css", ".js": "application/javascript", ".svg": "image/svg+xml", ".ttf": "font/ttf",
         ".txt": "text/plain; charset=utf-8", ".md": "text/plain; charset=utf-8", ".json": "application/json", ".png": "image/png"}
 _since = {"state": None, "t": None}
+_orphan = {"n": 0, "since": None}  # requests held with no connection to drop, and since when (reported once it persists)
 _cable = {"t": None, "bytes": None, "slow_since": None}
 _wake = threading.Event()  # set when the cached state is stale: the sampler re-reads at once
 _diag = {"running": False, "file": None, "error": None, "finished": None}
@@ -190,8 +191,8 @@ def connections():
             ip = f[0].rsplit(":", 1)[0]
             out.append({"peer": f[0], "client": names.get(ip, ip), "state": f[1], "seconds": int(f[2]),
                         "bytes_sent": max(0, int(f[3])), "stuck": f[1] == "waiting" and int(f[2]) >= STUCK_S})
-    order = {"waiting": 0, "gone": 1, "streaming": 2, "idle": 3}
-    return sorted(out, key=lambda c: (order.get(c["state"], 4), -c["seconds"]))
+    order = {"waiting": 0, "gone": 1, "paused": 2, "streaming": 3, "idle": 4}
+    return sorted(out, key=lambda c: (order.get(c["state"], 5), -c["seconds"]))
 
 
 def cable_sample(now):
@@ -375,7 +376,17 @@ def sample_forever():
                     nodes = list(ex.map(node_info, NODES))
                 nodes_t = now
             conns = connections() if svc == "active" else []
-            held = (h.get("requests_running", 0) + h.get("requests_waiting", 0)) if h and h.get("ok") else 0
+            # requests the server holds beyond the connections that could hold one (the client hung up, or it was sent
+            # from the head). The count is read before and after the connection scan and the smaller taken, so a request
+            # that finished in between is not an orphan; and it is reported only once it has lasted two readings.
+            held = lambda hh: (hh.get("requests_running", 0) + hh.get("requests_waiting", 0)) if hh and hh.get("ok") else 0
+            h2 = _fast["h"] if _fast["t"] and time.time() - _fast["t"] < 5 else h
+            orphans = max(0, min(held(h), held(h2)) - sum(1 for c in conns if c["state"] != "idle"))
+            if orphans and _orphan["n"]:
+                _orphan["n"] = orphans
+            else:
+                _orphan.update(n=orphans, since=now if orphans else None)
+            unmatched = orphans if _orphan["since"] and now - _orphan["since"] >= 5 else 0
             prog = _fast["prog"] if h and h.get("ok") else None
             for c in conns:  # the cables say whether a waiting request's prompt is being read, or nothing moves
                 if c["state"] == "waiting" and prog and prog["state"] in ("stalled", "loading"):
@@ -389,8 +400,8 @@ def sample_forever():
                 "totals": {k: _totals[k] for k in ("since", "requests", "prompt_tokens", "completion_tokens", "peak_tps", "peak_tps_t")},
                 "nodes": nodes, "download": downloads(), "updated": int(now), "error": None,
                 "connections": conns, "stuck_after_s": STUCK_S,
-                # requests the server holds beyond the connections that could hold one: client gone, or sent from the head
-                "unmatched_requests": max(0, held - sum(1 for c in conns if c["state"] != "idle")),
+                "unmatched_requests": unmatched,
+                "unmatched_for_s": int(now - _orphan["since"]) if unmatched else 0,
             })
         except Exception as e:  # keep sampling; show the error instead of a stale page
             _cache["error"] = str(e)
