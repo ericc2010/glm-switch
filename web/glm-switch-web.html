@@ -3,76 +3,110 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>GLM Cluster Status</title>
 <style>
   :root {
-    --bg: #f6f6f4; --card: #ffffff; --text: #1b1b1a; --muted: #6b6b66; --line: #e3e2de; --track: #ecebe7;
-    --ok: #1f7a4d; --ok-bg: #e3f3ea; --warn: #9a5800; --warn-bg: #fbefdc; --bad: #b3261e; --bad-bg: #fbe5e3;
-    --accent: #2f5bd3; --accent-text: #ffffff;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #141414; --card: #1d1d1c; --text: #ecebe8; --muted: #9a9993; --line: #2e2e2c; --track: #2a2a28;
-      --ok: #5cc98f; --ok-bg: #173325; --warn: #e3a447; --warn-bg: #3a2b14; --bad: #f2786f; --bad-bg: #3d1d1a;
-      --accent: #7d9cf0; --accent-text: #0e0e0e;
-    }
+    --bg: #0e1013; --card: #15181d; --tile: #1a1e24; --line: #252a32; --line-strong: #323943; --track: #252a32;
+    --text: #e6e8ec; --muted: #8b919c; --faint: #5f6673;
+    --ok: #4cc38a; --ok-bg: rgba(76, 195, 138, .13); --warn: #e3b24a; --warn-bg: rgba(227, 178, 74, .13);
+    --bad: #f0695e; --bad-bg: rgba(240, 105, 94, .13);
+    --accent: #6ea4ff; --accent-text: #0b0e13; --btn: #1c2128; --btn-hover: #242a33; --focus: rgba(110, 164, 255, .5);
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 760px; margin: 0 auto; padding: 28px 16px 48px; }
-  h1 { font-size: 22px; margin: 0 0 2px; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
-  .sub { color: var(--muted); margin: 0 0 20px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; margin-bottom: 14px; }
+  html { background: var(--bg); }
+  body { margin: 0; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased;
+         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; }
+  main { max-width: 1280px; margin: 0 auto; padding: 24px 20px 40px; }
+  @media (max-width: 600px) { main { padding: 16px 16px 32px; } }
+  .top { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 2px 0 0; font-size: 13px; }
+  .updated { color: var(--faint); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 0 14px; align-items: start; }
+  @media (max-width: 980px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+
   .hero { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-  .pill { font-weight: 700; font-size: 18px; padding: 6px 14px; border-radius: 999px; }
+  .pill { font-weight: 700; font-size: 15px; padding: 5px 12px; border-radius: 999px; letter-spacing: .01em; }
   .pill.up { color: var(--ok); background: var(--ok-bg); }
   .pill.starting, .pill.switching { color: var(--warn); background: var(--warn-bg); }
   .pill.down, .pill.failed, .pill.unresponsive { color: var(--bad); background: var(--bad-bg); }
-  .hero-text { font-size: 17px; font-weight: 600; }
-  .hero-sub { color: var(--muted); font-size: 14px; }
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
-  .stat .v { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
-  .stat .k { color: var(--muted); font-size: 13px; }
+  .hero-text { font-size: 16px; font-weight: 600; }
+  .hero-sub { color: var(--muted); font-size: 13px; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  .stat { background: var(--tile); border-radius: 10px; padding: 11px 13px 10px; min-width: 0; }
+  .stat .v { font-size: 23px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.015em; line-height: 1.2;
+             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat .k { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .rowhead { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 16px 0 8px;
+             color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .07em; font-weight: 600; }
+  .rowhead span { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--faint); }
+
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); font-size: 14px; }
-  th { color: var(--muted); font-weight: 600; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); font-size: 13.5px; vertical-align: middle; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
   tr:last-child td { border-bottom: 0; }
-  .tablewrap { overflow-x: auto; }
+  tbody tr:hover td { background: rgba(255, 255, 255, .02); }
+  .tablewrap { overflow-x: auto; margin: 0 -6px; }
   .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); } .muted { color: var(--muted); }
-  .bar { height: 8px; background: var(--track); border-radius: 99px; overflow: hidden; margin: 4px 0 10px; }
+
+  .bar { height: 6px; background: var(--track); border-radius: 99px; overflow: hidden; margin: 4px 0 10px; }
   .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .6s; }
-  .dl-row { display: flex; justify-content: space-between; font-size: 14px; }
-  .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  button { font: inherit; font-weight: 600; padding: 13px; border-radius: 10px; cursor: pointer;
-           border: 1px solid var(--line); background: var(--card); color: var(--text); }
-  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  label { display: flex; gap: 8px; align-items: center; margin-top: 12px; color: var(--muted); font-size: 14px; }
-  .note { color: var(--muted); font-size: 14px; margin: 10px 0 0; }
-  pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 13px/1.45 ui-monospace, Menlo, monospace;
-        max-height: 260px; overflow: auto; }
-  details summary { cursor: pointer; font-weight: 600; }
-  ol { padding-left: 20px; margin: 8px 0 0; } code { font: 13px ui-monospace, Menlo, monospace; }
-  .updated { color: var(--muted); font-size: 12px; text-align: right; }
-  .timer { margin-top: 16px; }
-  .timer .clock { font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: .01em; }
-  .timer .step { color: var(--muted); font-size: 14px; margin-top: 2px; }
   .bar.warn-fill > div { background: var(--warn); }
-  .last { color: var(--muted); font-size: 14px; margin-top: 10px; }
-  .banner { background: var(--warn-bg); color: var(--warn); border-radius: 10px; padding: 10px 14px; margin-top: 14px;
-            font-size: 14px; font-weight: 600; }
-  .buttons.three { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-  button.small { padding: 5px 12px; font-size: 13px; border-radius: 8px; }
-  button.danger { color: var(--bad); border-color: var(--bad); }
+  .dl-row { display: flex; justify-content: space-between; font-size: 13px; }
+
+  .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .buttons.three { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  button { font: inherit; font-weight: 600; font-size: 14px; padding: 11px 12px; border-radius: 9px; cursor: pointer;
+           border: 1px solid var(--line-strong); background: var(--btn); color: var(--text); transition: background .12s, border-color .12s; }
+  button:hover:not(:disabled) { background: var(--btn-hover); border-color: #3f4753; }
+  button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button.primary:hover:not(:disabled) { background: #85b3ff; border-color: #85b3ff; }
+  button.danger { color: var(--bad); border-color: rgba(240, 105, 94, .45); }
+  button.danger:hover:not(:disabled) { background: var(--bad-bg); border-color: var(--bad); }
+  button.small { padding: 4px 11px; font-size: 12.5px; border-radius: 7px; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
   td.act { text-align: right; width: 1%; white-space: nowrap; }
+  label { display: flex; gap: 8px; align-items: center; margin-top: 10px; color: var(--muted); font-size: 13px; }
+  input[type=checkbox] { accent-color: var(--accent); }
+
+  .note { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+  .note a { color: var(--accent); }
+  details.help { margin-top: 10px; color: var(--muted); font-size: 13px; }
+  details.help summary { cursor: pointer; color: var(--faint); font-size: 12.5px; list-style: none; }
+  details.help summary::before { content: "▸ "; font-size: 11px; }
+  details.help[open] summary::before { content: "▾ "; }
+  details.help summary::-webkit-details-marker { display: none; }
+  details.help summary:hover { color: var(--muted); }
+  details.help p { margin: 8px 0 0; }
+  details.help em { color: var(--text); font-style: normal; }
+  details.help strong { color: var(--text); }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.45 ui-monospace, Menlo, monospace;
+        max-height: 220px; overflow: auto; color: #c9ced6; }
+  details summary { cursor: pointer; font-weight: 600; }
+  ol { padding-left: 20px; margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+  code { font: 12.5px ui-monospace, Menlo, monospace; color: var(--text); background: var(--tile); padding: 1px 5px; border-radius: 4px; }
+  .timer { margin-top: 14px; }
+  .timer .clock { font-size: 36px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: .01em; line-height: 1.1; }
+  .timer .step { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .last { color: var(--muted); font-size: 13px; margin-top: 10px; }
+  .banner { background: var(--warn-bg); color: var(--warn); border-left: 3px solid var(--warn); border-radius: 8px;
+            padding: 9px 12px; margin-top: 12px; font-size: 13px; font-weight: 600; }
 </style>
 </head>
 <body>
 <main>
-  <h1>GLM cluster</h1>
-  <p class="sub">GLM-5.3 on three DGX Sparks: status, live numbers and the model switch.</p>
+  <header class="top">
+    <div>
+      <h1>GLM cluster</h1>
+      <p class="sub">GLM-5.3 on three DGX Sparks: status, live numbers and the model switch.</p>
+    </div>
+    <p class="updated" id="updated"></p>
+  </header>
 
   <section class="card">
     <div class="hero">
@@ -90,101 +124,122 @@
     <div class="last" id="last" hidden></div>
   </section>
 
-  <section class="card" id="live-card">
-    <h2>Live</h2>
-    <div class="stats">
-      <div class="stat"><div class="v" id="tps">–</div><div class="k">tokens/s right now</div></div>
-      <div class="stat"><div class="v" id="active">–</div><div class="k">requests running</div></div>
-      <div class="stat"><div class="v" id="served">–</div><div class="k">requests since start</div></div>
-      <div class="stat"><div class="v" id="pool">–</div><div class="k">memory pool free</div></div>
-      <div class="stat"><div class="v" id="cable">–</div><div class="k" id="cable-k">on the cables</div></div>
-    </div>
-    <div class="banner" id="stuck" hidden></div>
-  </section>
+  <div class="grid">
+  <div>
+    <section class="card" id="live-card">
+      <h2>Live</h2>
+      <div class="stats">
+        <div class="stat"><div class="v" id="tps">–</div><div class="k">tokens/s right now</div></div>
+        <div class="stat"><div class="v" id="active">–</div><div class="k">requests running</div></div>
+        <div class="stat"><div class="v" id="cable">–</div><div class="k" id="cable-k">on the cables</div></div>
+        <div class="stat"><div class="v" id="pool">–</div><div class="k">memory pool free</div></div>
+      </div>
+      <div class="banner" id="stuck" hidden></div>
+      <div class="rowhead">Totals <span id="totals-since"></span></div>
+      <div class="stats">
+        <div class="stat"><div class="v" id="served">–</div><div class="k">requests since start</div></div>
+        <div class="stat"><div class="v" id="t-req">–</div><div class="k">requests, all time</div></div>
+        <div class="stat"><div class="v" id="t-prompt">–</div><div class="k">prompt tokens, all time</div></div>
+        <div class="stat"><div class="v" id="t-gen">–</div><div class="k">tokens generated, all time</div></div>
+        <div class="stat"><div class="v" id="t-peak">–</div><div class="k" id="t-peak-k">peak tokens/s</div></div>
+      </div>
+    </section>
 
-  <section class="card">
-    <h2>Requests</h2>
-    <div class="tablewrap">
-      <table>
-        <thead><tr><th>Client</th><th>State</th><th>Since request</th><th>Sent</th><th></th></tr></thead>
-        <tbody id="conns"></tbody>
-      </table>
-    </div>
-    <p class="note" id="unmatched" hidden></p>
-    <p class="note">Waiting means no reply has been sent yet: the request is in its prompt (prefill), queued, or is a
-      non-streaming request that is still being answered; a very long prompt can take minutes. The cables between the
-      Sparks tell the difference: <em>prompt loading</em> means the prompt is being read (about 2.3 GB/s), <em>engine
-      stalled</em> means nothing has moved for 30 s with work held. Gone means the client
-      already hung up but its request still holds a slot. <strong>Drop</strong> closes that client's connection and the
-      server cancels its request within seconds; the others keep going. The client sees an error and may send it again.</p>
-  </section>
+    <section class="card">
+      <h2>Requests</h2>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Client</th><th>State</th><th>Since request</th><th>Sent</th><th></th></tr></thead>
+          <tbody id="conns"></tbody>
+        </table>
+      </div>
+      <p class="note" id="unmatched" hidden></p>
+      <details class="help">
+        <summary>What the states mean</summary>
+        <p><em>Waiting</em> means no reply has been sent yet: the request is in its prompt (prefill), queued, or is a
+          non-streaming request still being answered; a very long prompt can take minutes. The cables between the
+          Sparks tell the difference: <em>prompt loading</em> means the prompt is being read (about 2.3 GB/s),
+          <em>engine stalled</em> means nothing has moved for 30 s with work held. <em>Gone</em> means the client
+          already hung up but its request still holds a slot.</p>
+        <p><strong>Drop</strong> closes that client's connection and the server cancels its request within seconds;
+          the others keep going. The client sees an error and may send it again.</p>
+      </details>
+    </section>
 
-  <section class="card">
-    <h2>Unstick</h2>
-    <div class="buttons three">
-      <button id="b-dropall" onclick="dropPeer('all')">Drop all requests</button>
-      <button id="b-restart" class="danger" onclick="restart()">Restart model</button>
-      <button id="b-diag" onclick="diag()">Capture diagnostics</button>
-    </div>
-    <p class="note" id="unstick-msg" hidden></p>
-    <p class="note" id="diag-note" hidden></p>
-    <p class="note">Try them in this order. <strong>Drop all</strong> frees every slot in seconds without reloading the
-      model. If a dropped request still counts as running after about 30 s, the server is stuck below the point where
-      it checks for cancels: <strong>Restart model</strong> reloads the same weights (about 2–3 min, every request is
-      cut off, Atlas uses the cloud meanwhile). <strong>Capture diagnostics</strong> first, while it is stuck: it saves
-      the metrics, connections and every Spark's logs for a look afterwards.</p>
-  </section>
+    <section class="card">
+      <h2>Sparks</h2>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Spark</th><th>Status</th><th>Model process</th><th>Cables</th><th>GPU</th><th>Temp</th><th>Clock</th><th>Free memory</th><th>Up for</th></tr></thead>
+          <tbody id="nodes"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
 
-  <section class="card">
-    <h2>Sparks</h2>
-    <div class="tablewrap">
-      <table>
-        <thead><tr><th>Spark</th><th>Status</th><th>Model process</th><th>Cables</th><th>GPU</th><th>Temp</th><th>Clock</th><th>Free memory</th><th>Up for</th></tr></thead>
-        <tbody id="nodes"></tbody>
-      </table>
-    </div>
-  </section>
+  <div>
+    <section class="card">
+      <h2>Unstick</h2>
+      <div class="buttons three">
+        <button id="b-dropall" onclick="dropPeer('all')">Drop all requests</button>
+        <button id="b-restart" class="danger" onclick="restart()">Restart model</button>
+        <button id="b-diag" onclick="diag()">Capture diagnostics</button>
+      </div>
+      <p class="note" id="unstick-msg" hidden></p>
+      <p class="note" id="diag-note" hidden></p>
+      <p class="note">In this order: capture diagnostics while it is stuck, drop all, and only then restart.</p>
+      <details class="help">
+        <summary>What each one does</summary>
+        <p><strong>Drop all</strong> frees every slot in seconds without reloading the model. If a dropped request
+          still counts as running after about 30 s, the server is stuck below the point where it checks for cancels:
+          <strong>Restart model</strong> reloads the same weights (about 2–3 min, every request is cut off, Atlas uses
+          the cloud meanwhile). <strong>Capture diagnostics</strong> saves the metrics, connections and every Spark's
+          logs for a look afterwards; take it first, while it is stuck.</p>
+      </details>
+    </section>
 
-  <section class="card" id="dl-card" hidden>
-    <h2>Download</h2>
-    <div id="dl"></div>
-  </section>
+    <section class="card">
+      <h2>Model</h2>
+      <div class="stats" style="margin-bottom:12px">
+        <div class="stat"><div class="v" id="w-normal">–</div><div class="k">Normal weights</div></div>
+        <div class="stat"><div class="v" id="w-ablit">–</div><div class="k">Ablit weights</div></div>
+      </div>
+      <div class="buttons">
+        <button id="b-normal" onclick="go('normal')">Switch to Normal</button>
+        <button id="b-ablit" onclick="go('ablit')">Switch to Ablit</button>
+      </div>
+      <label><input type="checkbox" id="force"> Switch even if requests are running (they will be cut off)</label>
+      <p class="note">A switch stops the model for about 2–6 minutes; Atlas uses the cloud meanwhile. Both models
+        answer to the same name. If the new model fails to start, it goes back by itself.</p>
+    </section>
 
-  <section class="card">
-    <h2>Model</h2>
-    <div class="stats" style="margin-bottom:14px">
-      <div class="stat"><div class="v" id="w-normal">–</div><div class="k">Normal weights</div></div>
-      <div class="stat"><div class="v" id="w-ablit">–</div><div class="k">Ablit weights</div></div>
-    </div>
-    <div class="buttons">
-      <button id="b-normal" onclick="go('normal')">Switch to Normal</button>
-      <button id="b-ablit" onclick="go('ablit')">Switch to Ablit</button>
-    </div>
-    <label><input type="checkbox" id="force"> Switch even if requests are running (they will be cut off)</label>
-    <p class="note">A switch stops the model for about 2–6 minutes; Atlas uses the cloud meanwhile. Both models answer
-      to the same name, so nothing else needs to change. If the new model fails to start, it goes back by itself.</p>
-  </section>
+    <section class="card" id="dl-card" hidden>
+      <h2>Download</h2>
+      <div id="dl"></div>
+    </section>
 
-  <section class="card" id="logcard" hidden>
-    <h2>Last switch</h2>
-    <pre id="log"></pre>
-  </section>
+    <section class="card" id="logcard" hidden>
+      <h2>Last switch</h2>
+      <pre id="log"></pre>
+    </section>
 
-  <section class="card">
-    <details>
-      <summary>Command line and JSON</summary>
-      <ol>
-        <li>ssh to the head Spark</li>
-        <li><code>glm-switch status</code> — what is running</li>
-        <li><code>glm-switch ablit</code> or <code>glm-switch normal</code> — switch (add <code>--force</code> if requests are running)</li>
-        <li><code>glm-switch conns</code>, <code>glm-switch drop &lt;ip:port&gt;|all</code>, <code>glm-switch restart</code>,
-          <code>glm-switch diag</code> — the Requests and Unstick cards</li>
-      </ol>
-      <p class="note">For other tools: <code>GET /api/status</code> on this page's address returns all of this as JSON
-        (<code>state</code> is <code>up</code>, <code>starting</code>, <code>switching</code>, <code>down</code> or <code>failed</code>).</p>
-    </details>
-  </section>
-  <p class="updated" id="updated"></p>
+    <section class="card">
+      <details>
+        <summary>Command line and JSON</summary>
+        <ol>
+          <li>ssh to the head Spark</li>
+          <li><code>glm-switch status</code> — what is running</li>
+          <li><code>glm-switch ablit</code> or <code>glm-switch normal</code> — switch (add <code>--force</code> if requests are running)</li>
+          <li><code>glm-switch conns</code>, <code>glm-switch drop &lt;ip:port&gt;|all</code>, <code>glm-switch restart</code>,
+            <code>glm-switch diag</code> — the Requests and Unstick cards</li>
+        </ol>
+        <p class="note">For other tools: <code>GET /api/status</code> on this page's address returns all of this as JSON
+          (<code>state</code> is <code>up</code>, <code>starting</code>, <code>switching</code>, <code>down</code> or <code>failed</code>;
+          <code>totals</code> holds the all-time counts).</p>
+      </details>
+    </section>
+  </div>
+  </div>
 </main>
 <script>
 const $ = id => document.getElementById(id);
@@ -224,7 +279,11 @@ function dur(s) {
   return h ? `${h} h ${m} min` : m ? `${m} min ${sec} s` : `${sec} s`;
 }
 const num = n => n == null ? "–" : Number(n).toLocaleString();
+// 1,234 · 56.7 k · 73.9 M · 1.20 B — the exact figure goes in the tile's tooltip
+const compact = n => n == null ? "–" : n >= 1e9 ? (n / 1e9).toFixed(2) + " B" : n >= 1e6 ? (n / 1e6).toFixed(1) + " M"
+  : n >= 1e4 ? (n / 1e3).toFixed(0) + " k" : num(n);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function big(id, n) { $(id).textContent = compact(n); $(id).title = n == null ? "" : num(n); }
 
 function paint(s) {
   if (!s.state) { $("hero").textContent = s.error ? "Status error: " + s.error : "Collecting the first reading…"; return; }
@@ -269,7 +328,7 @@ function paint(s) {
   const L = s.live;
   $("tps").textContent = L ? L.tokens_per_s.toFixed(1) : "–";
   $("active").textContent = L ? `${L.requests_running} / ${L.max_at_once}` : "–";
-  $("served").textContent = L ? num(L.requests_served) : "–";
+  big("served", L ? L.requests_served : null);
   $("pool").textContent = L ? L.pool_free_pct + "%" : "–";
   const G = L && L.progress;
   const mb = L && L.cable_mb_s;
@@ -277,6 +336,13 @@ function paint(s) {
   $("cable").className = "v " + (G && G.state === "stalled" ? "bad" : "");
   $("cable-k").textContent = "on the cables" + (!G ? "" : G.state === "loading" ? " · a prompt is loading" : G.state === "decoding" ? " · answering"
     : G.state === "stalled" ? ` · NOTHING MOVING for ${G.stalled_s} s` : " · quiet");
+  const T = s.totals || {};
+  big("t-req", T.requests); big("t-prompt", T.prompt_tokens); big("t-gen", T.completion_tokens);
+  $("t-peak").textContent = T.peak_tps ? Number(T.peak_tps).toFixed(1) : "–";
+  $("t-peak-k").textContent = "peak tokens/s" + (T.peak_tps_t ? " · " + new Date(T.peak_tps_t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "");
+  $("t-peak").title = "the fastest 5-second window of reply tokens, all streams together";
+  $("totals-since").textContent = T.since ? "all time since " + new Date(T.since * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })
+    + " · since start resets at each model restart" : "";
 
   $("nodes").innerHTML = (s.nodes || []).map(n => {
     const name = `<td><strong>${esc(n.name)}</strong><br><span class="muted">${esc(n.role)}</span></td>`;

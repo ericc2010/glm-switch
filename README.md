@@ -82,8 +82,15 @@ is newer than the last one seen, and the bytes sent since then say whether a rep
 the current request are remembered in `/tmp/glm-switch-conns.state`. A very long prompt legitimately waits for minutes
 (about 2.5k prompt tokens/s on 3 Sparks, less while others decode).
 
+## All-time totals
+
+The model server's counters start over at every restart, so the page keeps their sum: requests, prompt tokens and
+generated tokens all time, and the peak tokens/s seen (the fastest 5-second window, all streams together). They live
+in `~/.local/state/glm-switch/totals.json` on the head, written as they change; a model restart while the page service
+is down loses at most what the old run did after the last reading. Delete the file to start over.
+
 **For other tools:** `GET /api/status` returns everything as JSON. `state` is one of `up`, `starting`, `switching`,
-`down` or `failed`.
+`down` or `failed`; `totals` holds the all-time counts.
 
 ## What a switch does
 

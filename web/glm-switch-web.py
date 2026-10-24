@@ -4,7 +4,7 @@
 Switching runs ~/bin/glm-switch, so the page and the command behave the same. A sampler thread gathers the
 telemetry in the background, so a page load never waits on ssh.
   GET  /             the page
-  GET  /api/status   state, live numbers, each Spark, downloads, the last switch's log (JSON, for other tools too)
+  GET  /api/status   state, live numbers, all-time totals, each Spark, downloads, the last switch's log (JSON, for other tools too)
   POST /api/switch   {"target": "normal" | "ablit", "force": false}
   POST /api/restart  {"force": false}      restart the model on the weights it serves now
   POST /api/drop     {"peer": "ip:port" | "all"}   close a client's connection; the server cancels its request
@@ -64,6 +64,11 @@ ABLIT_GB = 176  # the Ablit checkpoint on disk (du -sbL), checked 2026-10-22
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", *CONF.get("WEB_HOSTS", "").split()}
 PREFILL_MB_S = float(CONF.get("CABLE_PREFILL_MB_S", "1000"))  # below this with a prompt filling: it is not being read
 LOCK = "/tmp/glm-switch.lock"
+# The server's counters start over at every restart; this page keeps their sum across restarts here.
+TOTALS = os.path.join(HOME, ".local", "state", "glm-switch", "totals.json")
+TOTAL_KEYS = {"requests": "requests_total", "prompt_tokens": "prompt_tokens_total", "completion_tokens": "completion_tokens_total"}
+_totals = {"since": None, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "last": None, "last_t": None,
+           "peak_tps": 0.0, "peak_tps_t": None}  # peak: the fastest ~5 s window of reply tokens seen, all streams together
 _child = {"proc": None}
 _lock = threading.Lock()
 _cache = {}
@@ -202,6 +207,47 @@ def engine_progress(filling, decoding, mb_s, now):
     return {"state": state, "mb_s": round(mb_s), "stalled_s": stalled_s, "filling": filling, "decoding": decoding}
 
 
+def load_totals():
+    try:
+        with open(TOTALS) as f:
+            d = json.load(f)
+        _totals.update({k: d[k] for k in _totals if k in d})
+    except (OSError, ValueError):
+        pass
+
+
+def add_totals(h, now):
+    """Add what /health's counters gained since the last reading to the all-time totals, and save them. The counters
+    start over when the model restarts: then the new run's whole count is added (what the old run did after the last
+    reading, at most a few seconds' worth, is lost). A restart shows as fewer finished requests than before, or as a
+    service start newer than the last reading. completion_tokens_total counts running replies too, so it can dip a
+    little when a reply is cancelled: a dip without a restart adds nothing."""
+    cur = {k: int(h.get(src) or 0) for k, src in TOTAL_KEYS.items()}
+    last = _totals["last"]
+    peak = _rate["tps"] > _totals["peak_tps"]
+    if peak:
+        _totals.update(peak_tps=round(_rate["tps"], 1), peak_tps_t=now)
+    if last is None:  # first reading ever: the running server's count so far is the start
+        _totals.update(cur, since=now)
+    else:
+        restarted = cur["requests"] < last["requests"] or _service_age() < now - (_totals["last_t"] or now)
+        gained = {k: cur[k] if restarted else max(0, cur[k] - last[k]) for k in cur}
+        if not any(gained.values()) and not peak:
+            _totals.update(last=cur, last_t=now)  # a dip, or nothing new: no write
+            return
+        for k, v in gained.items():
+            _totals[k] += v
+    _totals.update(last=cur, last_t=now)
+    try:
+        os.makedirs(os.path.dirname(TOTALS), exist_ok=True)
+        tmp = TOTALS + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_totals, f)
+        os.replace(tmp, TOTALS)
+    except OSError as e:
+        _cache["error"] = "cannot save the all-time totals: %s" % e
+
+
 def systemd(unit, prop):
     return sh(["systemctl", "show", "-p", prop, "--value", unit])[1]
 
@@ -233,6 +279,7 @@ def sample_forever():
                 else:
                     _rate["tps"] = 0.0  # first reading, or the counter restarted with the server
                 _rate.update(t=now, tokens=tok)
+                add_totals(h, now)
             else:
                 _rate.update(t=None, tokens=None, tps=0.0)
             # a crashed start sits in auto-restart (systemd shows it as activating) until its next try
@@ -284,6 +331,7 @@ def sample_forever():
                     "cable_mb_s": None if mb_s is None else round(mb_s),
                     "progress": prog,
                 },
+                "totals": {k: _totals[k] for k in ("since", "requests", "prompt_tokens", "completion_tokens", "peak_tps", "peak_tps_t")},
                 "nodes": nodes, "download": downloads(), "updated": int(now), "error": None,
                 "connections": conns, "stuck_after_s": STUCK_S,
                 # requests the server holds beyond the connections that could hold one: client gone, or sent from the head
@@ -449,5 +497,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    load_totals()
     threading.Thread(target=sample_forever, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
