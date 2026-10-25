@@ -143,7 +143,7 @@
   }
   function renderGauges(s) {
     const L = s.live, T = s.totals || {};
-    const peak = valid(T.peak_tps) ? T.peak_tps : null;
+    const peak = valid(T.peak_tps) && T.peak_tps > 0 ? T.peak_tps : null;
     glideTo('tps', L ? L.tokens_per_s : null, v => gaugeThroughput(v, peak));
     $('dial-source').textContent = L ? 'live · reply tokens of all streams together' : 'no current data';
     $('dial-dot').style.background = L ? '' : 'var(--text-muted)';
@@ -244,7 +244,7 @@
       [num(T.requests), 'Requests · all time'],
       [compact(T.prompt_tokens), 'Prompt tokens · all time'],
       [compact(T.completion_tokens), 'Generated tokens · all time'],
-      [valid(T.peak_tps) && T.peak_tps > 0 ? num(T.peak_tps, 1) : '—', 'Recorded peak · tokens/s' + (peakDate ? ' · ' + peakDate : '')],
+      [valid(T.peak_tps) && T.peak_tps > 0 ? num(T.peak_tps, 1) : '—', 'Recorded peak · tokens/s' + (peakDate ? ' · ' + peakDate : T.peak_since ? ' · reset ' + new Date(T.peak_since * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : '')],
     ];
     $('totals-grid').innerHTML = items.map(i => `<div class="total"><strong>${i[0]}</strong><span>${esc(i[1])}</span></div>`).join('');
     $('totals-since').textContent = T.since ? 'all time since ' + new Date(T.since * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) + ' · since start resets at each model restart' : '';
@@ -355,6 +355,18 @@
       body: '<div class="detail-note"><strong>Streaming:</strong> reply bytes are flowing to the client.</div><div class="detail-note"><strong>Waiting for reply:</strong> nothing but headers sent yet — the prompt is being read (<em>prompt loading</em>, about 2.5k tokens/s on three Sparks, so a 300k-token prompt takes about two minutes), it is queued, or it is a non-streaming request still being answered. <em>Engine stalled</em> means nothing has moved over the cables for 30 s with work held.</div><div class="detail-note"><strong>Reply paused:</strong> a reply of over 4 KB that has not moved for 3 s. The server closes a chat connection when its reply ends, so an open one is still being answered; a pause while another prompt loads is normal.</div><div class="detail-note"><strong>Client gone:</strong> the client hung up but its request still holds a lane.</div><div class="detail-note"><strong>Idle:</strong> a connection with no request on it, like a health poller.</div><div class="detail-note"><strong>Drop</strong> closes that connection from the head; the server cancels its request within seconds and the others keep going. The client sees an error and may send it again.</div>' });
   }
 
+  async function resetPeak() {
+    const T = (S && S.totals) || {};
+    const ok = await confirmDialog({ eyebrow: 'Recorded peak', title: 'Reset the peak tokens/s?', confirm: 'Reset peak',
+      description: (valid(T.peak_tps) && T.peak_tps > 0 ? `The recorded peak of ${num(T.peak_tps, 1)} tokens/s is forgotten` : 'The recorded peak is forgotten') + ' and the next readings set a new one. The other totals are kept.' });
+    if (!ok) return;
+    try {
+      const r = await post('/api/reset-peak', {});
+      notify(r.ok ? 'Peak reset. The next 5-second window sets the new one.' : r.message || 'Could not reset the peak', r.ok ? '' : 'danger');
+    } catch (e) { notify('Could not reach the page server', 'danger'); }
+    refresh();
+  }
+
   async function dropPeer(peer) {
     const C = S && S.connections || [];
     const c = C.find(x => x.peer === peer);
@@ -408,6 +420,7 @@
   $('model-grid').addEventListener('click', e => { const b = e.target.closest('[data-model]'); if (b && !b.disabled) go(b.dataset.model); });
   $('request-list').addEventListener('click', e => { const b = e.target.closest('button.drop-button'); if (b && !b.disabled) dropPeer(b.dataset.peer); });
   $('request-help').addEventListener('click', showRequestHelp);
+  $('reset-peak').addEventListener('click', resetPeak);
   $('requests-tile').addEventListener('click', () => $('request-heading').scrollIntoView({ behavior: 'smooth', block: 'start' }));
   $('interconnect-tile').addEventListener('click', showInterconnect);
   $('diagnostics-button').addEventListener('click', diag);

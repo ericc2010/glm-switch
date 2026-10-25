@@ -84,6 +84,7 @@ a { color: var(--accent); }
 .dial-footer .tiny-dot { width: 5px; height: 5px; background: var(--accent); }
 .dial-range { margin-left: auto; font-size: 8px; letter-spacing: .5px; }
 .dial-range b { margin-left: 6px; font-weight: 400; color: var(--text); }
+.dial-reset { margin-left: 10px; font-size: 8px; letter-spacing: .5px; padding: 2px 6px; line-height: 1.2; }
 .secondary-telemetry { display: grid; grid-template-rows: 1fr 79px 74px; gap: 10px; min-width: 0; }
 .meter-grid, .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; min-width: 0; }
 .meter-panel { overflow: hidden; }

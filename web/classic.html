@@ -141,7 +141,7 @@
         <div class="stat"><div class="v" id="t-req">–</div><div class="k">requests, all time</div></div>
         <div class="stat"><div class="v" id="t-prompt">–</div><div class="k">prompt tokens, all time</div></div>
         <div class="stat"><div class="v" id="t-gen">–</div><div class="k">tokens generated, all time</div></div>
-        <div class="stat"><div class="v" id="t-peak">–</div><div class="k" id="t-peak-k">peak tokens/s</div></div>
+        <div class="stat"><div class="v" id="t-peak">–</div><div class="k" id="t-peak-k">peak tokens/s</div><div class="k"><a href="#" id="t-peak-reset" title="Forget the recorded peak; the next readings set a new one">reset</a></div></div>
       </div>
     </section>
 
@@ -434,6 +434,14 @@ async function refresh() {
   catch { $("pill").textContent = "?"; $("pill").className = "pill down"; $("hero").textContent = "Can't reach the status service on the head Spark"; }
   clearTimeout(timer); timer = setTimeout(refresh, 2000);  // the status is a cached dict: a few KB each time
 }
+
+document.getElementById("t-peak-reset").addEventListener("click", async e => {
+  e.preventDefault();
+  if (!confirm("Reset the recorded peak tokens/s? The next readings set a new one; the other totals are kept.")) return;
+  try { const r = await post("/api/reset-peak", {}); if (!r.ok) alert(r.message || "could not reset the peak"); }
+  catch (err) { alert("could not reach the page server"); }
+  refresh();
+});
 
 async function post(path, body) {
   const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-GLM-Switch": "1" },

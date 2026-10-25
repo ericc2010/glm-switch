@@ -72,7 +72,8 @@ LOCK = "/tmp/glm-switch.lock"
 TOTALS = os.path.join(HOME, ".local", "state", "glm-switch", "totals.json")
 TOTAL_KEYS = {"requests": "requests_total", "prompt_tokens": "prompt_tokens_total", "completion_tokens": "completion_tokens_total"}
 _totals = {"since": None, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "last": None, "last_t": None,
-           "peak_tps": 0.0, "peak_tps_t": None}  # peak: the fastest ~5 s window of reply tokens seen, all streams together
+           "peak_tps": 0.0, "peak_tps_t": None,  # peak: the fastest ~5 s window of reply tokens seen, all streams together
+           "peak_since": None}  # when the peak was last reset by hand (None: never)
 _child = {"proc": None}
 _lock = threading.Lock()
 _cache = {}
@@ -253,6 +254,10 @@ def add_totals(h, now):
         for k, v in gained.items():
             _totals[k] += v
     _totals.update(last=cur, last_t=now)
+    save_totals()
+
+
+def save_totals():
     try:
         os.makedirs(os.path.dirname(TOTALS), exist_ok=True)
         tmp = TOTALS + ".tmp"
@@ -261,6 +266,20 @@ def add_totals(h, now):
         os.replace(tmp, TOTALS)
     except OSError as e:
         _cache["error"] = "cannot save the all-time totals: %s" % e
+
+
+TOTALS_SHOWN = ("since", "requests", "prompt_tokens", "completion_tokens", "peak_tps", "peak_tps_t", "peak_since")
+
+
+def reset_peak():
+    """Forget the recorded peak tokens/s so the next readings set a new one; the other totals stay."""
+    now = time.time()
+    _totals.update(peak_tps=0.0, peak_tps_t=None, peak_since=now)
+    save_totals()
+    with _lock:  # the page's next poll shows it at once, not after the slow sampler's next pass
+        if "totals" in _cache:
+            _cache["totals"] = {k: _totals[k] for k in TOTALS_SHOWN}
+    return True, "peak reset"
 
 
 def systemd(unit, prop):
@@ -397,7 +416,7 @@ def sample_forever():
                 "serving": st.get("serving", "unknown"), "configured": st.get("configured", "unknown"),
                 "weights": weights, "switching": switching(),
                 "live": live_numbers(h) if h and h.get("ok") else None,
-                "totals": {k: _totals[k] for k in ("since", "requests", "prompt_tokens", "completion_tokens", "peak_tps", "peak_tps_t")},
+                "totals": {k: _totals[k] for k in TOTALS_SHOWN},
                 "nodes": nodes, "download": downloads(), "updated": int(now), "error": None,
                 "connections": conns, "stuck_after_s": STUCK_S,
                 "unmatched_requests": unmatched,
@@ -541,7 +560,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok():
             return self._send(421, '{"error": "unknown host"}')
-        if self.path not in ("/api/switch", "/api/restart", "/api/drop", "/api/diag"):
+        if self.path not in ("/api/switch", "/api/restart", "/api/drop", "/api/diag", "/api/reset-peak"):
             return self._send(404, '{"error": "not found"}')
         # a custom header and JSON: another site's page cannot send either without a CORS preflight, never granted here
         if self.headers.get("X-GLM-Switch") != "1":
@@ -556,7 +575,9 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             return self._send(400, '{"error": "bad json"}')
-        if self.path == "/api/drop":
+        if self.path == "/api/reset-peak":
+            ok, msg = reset_peak()
+        elif self.path == "/api/drop":
             ok, msg = drop(body.get("peer"))
         elif self.path == "/api/diag":
             ok, msg = run_diag()

@@ -117,7 +117,9 @@ glides the meters between readings.
 The model server's counters start over at every restart, so the page keeps their sum: requests, prompt tokens and
 generated tokens all time, and the peak tokens/s seen (the fastest 5-second window, all streams together). They live
 in `~/.local/state/glm-switch/totals.json` on the head, written as they change; a model restart while the page service
-is down loses at most what the old run did after the last reading. Delete the file to start over.
+is down loses at most what the old run did after the last reading. Delete the file to start over. **Reset peak** under
+the throughput dial (or *reset* on `/classic`) forgets the recorded peak alone, so the next 5-second window sets a new
+one; the counts are kept.
 
 **For other tools:** `GET /api/status` returns everything as JSON. `state` is one of `up`, `starting`, `switching`,
 `down` or `failed`; `totals` holds the all-time counts.
