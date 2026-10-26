@@ -7,6 +7,10 @@ all-time tally.
 
 ![The Spark Performance Dyno page](docs/screenshot.png)
 
+| A switch in progress | A stalled engine | On a phone |
+|---|---|---|
+| ![Switching](docs/switching.png) | ![Stalled](docs/stalled.png) | ![Phone](docs/phone.png) |
+
 Both weights serve under the same model name, so clients (Atlas, Hermes, ...) need no change when you switch.
 
 Built and used on a 3-Spark cluster (TP=3) with TensorFold 0.6; the recipe's 2-Spark setup works the same, with one worker
